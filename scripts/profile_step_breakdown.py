@@ -42,7 +42,7 @@ def _fake_inputs(cfg, rng, batch_size=1):
     return jax.tree.map(rand, obs_spec), jax.tree.map(rand, act_spec)
 
 
-def build_step(variant: str = "dummy", batch_size: int = 1):
+def build_step(variant: str = "dummy", batch_size: int = 1, optimizer: str = "adamw"):
     # On a real GPU/TPU slice, pass --variant gemma_2b for the production breakdown. On CPU keep `dummy`.
     small = variant == "dummy"
     cfg = pi0_config.Pi0Config(
@@ -55,24 +55,36 @@ def build_step(variant: str = "dummy", batch_size: int = 1):
     model = cfg.create(rng)
     model_def = nnx.graphdef(model)
     params = nnx.state(model)
-    tx = optax.adamw(1e-4)
-    opt_state = tx.init(params)
     obs, act = _fake_inputs(cfg, rng, batch_size=batch_size)
 
-    def train_step(params, opt_state, rng, obs, act):
-        model = nnx.merge(model_def, params)
-        model.train()
+    def loss_fn(model, rng, obs, act):
+        return jnp.mean(model.compute_loss(rng, obs, act, train=True))
 
-        def loss_fn(model, rng, obs, act):
-            return jnp.mean(model.compute_loss(rng, obs, act, train=True))
+    if optimizer == "none":
+        # Forward + backward only. This is the bottleneck region (attention/FFN/vision/data-wait) and avoids the
+        # optimizer state, which is what makes full AdamW on gemma_2b exceed a 32GB GPU.
+        def step(params, rng, obs, act):
+            model = nnx.merge(model_def, params)
+            model.train()
+            return nnx.value_and_grad(loss_fn)(model, rng, obs, act)
 
-        loss, grads = nnx.value_and_grad(loss_fn)(model, rng, obs, act)
-        updates, opt_state = tx.update(grads, opt_state, params)
-        new_params = optax.apply_updates(params, updates)
-        return new_params, opt_state, loss
+        jstep = jax.jit(step)
+        args = (params, rng, obs, act)
+    else:
+        # AdamW doubles param memory (fp32 m+v); SGD-momentum is ~1x and fits gemma_2b on 32GB.
+        tx = optax.sgd(1e-3, momentum=0.9) if optimizer == "sgd" else optax.adamw(1e-4)
+        opt_state = tx.init(params)
 
-    jstep = jax.jit(train_step)
-    args = (params, opt_state, rng, obs, act)
+        def step(params, opt_state, rng, obs, act):
+            model = nnx.merge(model_def, params)
+            model.train()
+            loss, grads = nnx.value_and_grad(loss_fn)(model, rng, obs, act)
+            updates, opt_state = tx.update(grads, opt_state, params)
+            return optax.apply_updates(params, updates), opt_state, loss
+
+        jstep = jax.jit(step)
+        args = (params, opt_state, rng, obs, act)
+
     compiled = jstep.lower(*args).compile()
     return (lambda: jstep(*args)), compiled
 
@@ -83,12 +95,26 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=8)
+    parser.add_argument("--optimizer", default="adamw", choices=["adamw", "sgd", "none"],
+                        help="none = forward+backward only (fits gemma_2b on 32GB); sgd = light state")
     args = parser.parse_args()
+
+    device = jax.devices()[0]
+    is_cpu = device.platform == "cpu"
+    label = f"`{args.variant}` variant, optimizer={args.optimizer}, batch={args.batch_size}, on {device.device_kind} ({device.platform})"
+    if is_cpu or args.variant == "dummy":
+        flag = (f"> ⚠️ **Not production: {label}.** The code path is the real model, but tiny dims and/or CPU "
+                "inflate data-wait/other (per-op dispatch) and shrink the GEMM/attention share. Run "
+                "`--variant gemma_2b` on a real accelerator for production proportions.")
+    else:
+        flag = (f"> ✅ **Production-scale run: {label}.** Random-init weights (structure is what attribution "
+                "measures). `optimizer=none` profiles forward+backward — the bottleneck region; the AdamW update "
+                "is small and elementwise.")
 
     # openpi guards model fns with jaxtyping runtime checks; disable them for AOT lowering/profiling (matches
     # how training/checkpoints.py wraps jitted regions).
     with at.disable_typechecking():
-        run_step, compiled = build_step(variant=args.variant, batch_size=args.batch_size)
+        run_step, compiled = build_step(variant=args.variant, batch_size=args.batch_size, optimizer=args.optimizer)
         trace_dir = tempfile.mkdtemp()
         bd = attribution.attribute_step(run_step, compiled, trace_dir=trace_dir, warmup=args.warmup, iters=args.iters)
     pct = bd.percentages()
@@ -97,12 +123,9 @@ def main() -> None:
         "# STEP_BREAKDOWN — openpi pi0 training step (attribution)",
         "",
         "Real `openpi.models.pi0` step (gemma naive-softmax attention + FFN + action expert + flow-matching",
-        "loss) through a faithful nnx value_and_grad + AdamW step, attributed by HLO named-scope + op type.",
+        "loss), attributed by HLO named-scope + op type.",
         "",
-        "> ⚠️ **Cheap-ladder run: `dummy` gemma variant (width=64, depth=4) on CPU.** The code path is the real",
-        "> model, but the proportions are NOT production: tiny dims + CPU inflate data-wait/other (per-op dispatch)",
-        "> and shrink the GEMM/attention share. Production proportions are HARDWARE-GATED — collect them by running",
-        "> this attribution on train.py's ptrain_step on a real accelerator slice.",
+        flag,
         "",
         f"Window: {bd.n_steps} steps | wall {bd.wall_us / 1e3 / bd.n_steps:.3f} ms/step | "
         f"device-busy {bd.device_busy_us / 1e3 / bd.n_steps:.3f} ms/step",
