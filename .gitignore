@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Package managers
+uv.lock
+.uv/
+
+# JAX / ML caches
+.jax_cache/
+*.npz
+*.npy
+wandb/
+outputs/
+checkpoints/
+runs/
+
+# Model weights & data (tracked out-of-band, not in git)
+assets/**/params/
+data/
+*.safetensors
+*.gguf
+*.model
+*.bin
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Tooling
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Secrets
+.env
+.env.*
+!.env.example
