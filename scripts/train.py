@@ -2,6 +2,7 @@ import dataclasses
 import functools
 import logging
 import platform
+import time
 from typing import Any
 
 import etils.epath as epath
@@ -23,6 +24,7 @@ import openpi.training.checkpoints as _checkpoints
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
 import openpi.training.optimizer as _optimizer
+import openpi.training.profiling as profiling
 import openpi.training.sharding as sharding
 import openpi.training.utils as training_utils
 import openpi.training.weight_loaders as _weight_loaders
@@ -247,6 +249,17 @@ def main(config: _config.TrainConfig):
         donate_argnums=(1,),
     )
 
+    # G6 profiling: opt-in via env (SHARDER_PROFILE=1), so the config schema and single-host path are untouched.
+    # `prof is None` => the loop below is byte-for-byte the original behavior (no blocking, no extra compile).
+    prof = profiling.ProfileConfig.from_env()
+    prof_samples: list[float] = []
+    prof_cost: profiling.StepCost | None = None
+    if prof is not None:
+        # Compile once to read the step's static FLOP/byte cost from XLA; shares the jit cache with the live
+        # calls below (same shapes/shardings), so no real double compilation.
+        prof_cost = profiling.step_cost(ptrain_step.lower(train_rng, train_state, batch).compile())
+        logging.info(f"[profile] enabled: timing steps {prof.start}..{prof.start + prof.steps - 1}")
+
     start_step = int(train_state.step)
     pbar = tqdm.tqdm(
         range(start_step, config.num_train_steps),
@@ -257,8 +270,31 @@ def main(config: _config.TrainConfig):
 
     infos = []
     for step in pbar:
+        in_prof = prof is not None and prof.in_window(step)
+        if in_prof:
+            t0 = time.perf_counter()
         with sharding.set_mesh(mesh):
             train_state, info = ptrain_step(train_rng, train_state, batch)
+        if in_prof:
+            # Block only inside the profiling window so we time real device execution, not async dispatch.
+            jax.block_until_ready((train_state, info))
+            prof_samples.append(time.perf_counter() - t0)
+            if prof.is_last(step):
+                report = profiling.mfu_report(
+                    profiling.summarize_step_times(prof_samples),
+                    prof_cost,
+                    peak_flops=prof.peak_flops,
+                    peak_bandwidth=prof.peak_bandwidth,
+                )
+                logging.info(f"[profile] {report.one_line()}")
+                wandb.log(
+                    {
+                        "profile/median_step_ms": report.step_time.median_s * 1e3,
+                        "profile/achieved_tflops": report.achieved_flops_per_s / 1e12,
+                        **({"profile/mfu": report.mfu} if report.mfu is not None else {}),
+                    },
+                    step=step,
+                )
         infos.append(info)
         if step % config.log_interval == 0:
             stacked_infos = common_utils.stack_forest(infos)

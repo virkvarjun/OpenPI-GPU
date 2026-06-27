@@ -21,9 +21,10 @@ it validates the plumbing and gives relative step time only. See PLAN.md (G6).
 from __future__ import annotations
 
 import dataclasses
+import os
 import statistics
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 import jax
@@ -83,6 +84,24 @@ class MFUReport:
         )
 
 
+def summarize_step_times(samples_s: Sequence[float]) -> StepTime:
+    """Build a ``StepTime`` from already-collected per-step durations (seconds).
+
+    Used by ``train.py`` to summarize times it measured *in the real training loop* (rather than re-running the
+    step via a thunk), so profiling reflects the steps that actually ran.
+    """
+    if not samples_s:
+        raise ValueError("need at least one sample")
+    s = sorted(samples_s)
+    return StepTime(
+        median_s=statistics.median(s),
+        mean_s=statistics.fmean(s),
+        p10_s=s[int(0.1 * (len(s) - 1))],
+        p90_s=s[int(0.9 * (len(s) - 1))],
+        n=len(s),
+    )
+
+
 def measure_step_time(run_step: Callable[[], Any], *, warmup: int = 3, iters: int = 20) -> StepTime:
     """Time ``run_step`` over ``iters`` measured launches after ``warmup`` launches.
 
@@ -99,15 +118,7 @@ def measure_step_time(run_step: Callable[[], Any], *, warmup: int = 3, iters: in
         t0 = time.perf_counter()
         jax.block_until_ready(run_step())
         samples.append(time.perf_counter() - t0)
-
-    samples.sort()
-    return StepTime(
-        median_s=statistics.median(samples),
-        mean_s=statistics.fmean(samples),
-        p10_s=samples[int(0.1 * (len(samples) - 1))],
-        p90_s=samples[int(0.9 * (len(samples) - 1))],
-        n=len(samples),
-    )
+    return summarize_step_times(samples)
 
 
 def step_cost(compiled: Any) -> StepCost:
@@ -141,6 +152,48 @@ def mfu_report(
         ridge = peak_flops / peak_bandwidth  # FLOP/byte where the device transitions compute<->memory bound
         bound = "compute" if cost.arithmetic_intensity >= ridge else "memory"
     return MFUReport(step_time=step_time, cost=cost, achieved_flops_per_s=achieved, mfu=mfu, bound=bound)
+
+
+@dataclasses.dataclass(frozen=True)
+class ProfileConfig:
+    """In-loop profiling settings, sourced from env vars so the config schema and single-host path stay untouched.
+
+    Enable with ``SHARDER_PROFILE=1``. Optional:
+      ``SHARDER_PROFILE_START`` (step to start the window, default 10),
+      ``SHARDER_PROFILE_STEPS`` (window length, default 20),
+      ``SHARDER_PEAK_FLOPS`` / ``SHARDER_PEAK_BW`` (device peaks for MFU/roofline; omit on CPU),
+      ``SHARDER_PROFILE_TRACE_DIR`` (write a jax.profiler trace here).
+    """
+
+    start: int = 10
+    steps: int = 20
+    peak_flops: float | None = None
+    peak_bandwidth: float | None = None
+    trace_dir: str | None = None
+
+    @classmethod
+    def from_env(cls, env: dict[str, str] | None = None) -> "ProfileConfig | None":
+        env = os.environ if env is None else env
+        if env.get("SHARDER_PROFILE", "").lower() not in ("1", "true", "yes"):
+            return None
+
+        def _f(key: str) -> float | None:
+            v = env.get(key)
+            return float(v) if v else None
+
+        return cls(
+            start=int(env.get("SHARDER_PROFILE_START", "10")),
+            steps=int(env.get("SHARDER_PROFILE_STEPS", "20")),
+            peak_flops=_f("SHARDER_PEAK_FLOPS"),
+            peak_bandwidth=_f("SHARDER_PEAK_BW"),
+            trace_dir=env.get("SHARDER_PROFILE_TRACE_DIR") or None,
+        )
+
+    def in_window(self, step: int) -> bool:
+        return self.start <= step < self.start + self.steps
+
+    def is_last(self, step: int) -> bool:
+        return step == self.start + self.steps - 1
 
 
 def profile_step(

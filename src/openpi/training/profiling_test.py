@@ -56,3 +56,34 @@ def test_mfu_is_none_without_peak():
     assert rep.mfu is None
     assert rep.bound is None
     assert "MFU=n/a" in rep.one_line()
+
+
+def test_summarize_step_times_orders_percentiles():
+    st = profiling.summarize_step_times([0.030, 0.010, 0.020, 0.040, 0.050])
+    assert st.n == 5
+    assert st.median_s == 0.030
+    assert st.p10_s <= st.median_s <= st.p90_s
+
+
+def test_profile_config_disabled_by_default():
+    assert profiling.ProfileConfig.from_env({}) is None
+    assert profiling.ProfileConfig.from_env({"SHARDER_PROFILE": "0"}) is None
+
+
+def test_profile_config_from_env_parses_window_and_peaks():
+    cfg = profiling.ProfileConfig.from_env(
+        {
+            "SHARDER_PROFILE": "1",
+            "SHARDER_PROFILE_START": "5",
+            "SHARDER_PROFILE_STEPS": "3",
+            "SHARDER_PEAK_FLOPS": "312e12",
+        }
+    )
+    assert cfg is not None
+    assert (cfg.start, cfg.steps) == (5, 3)
+    assert cfg.peak_flops == 312e12 and cfg.peak_bandwidth is None
+    # window = steps 5,6,7
+    assert not cfg.in_window(4)
+    assert cfg.in_window(5) and cfg.in_window(7)
+    assert not cfg.in_window(8)
+    assert cfg.is_last(7) and not cfg.is_last(6)
