@@ -23,6 +23,7 @@ import openpi.shared.nnx_utils as nnx_utils
 import openpi.training.checkpoints as _checkpoints
 import openpi.training.config as _config
 import openpi.training.data_loader as _data_loader
+import openpi.training.distributed as distributed
 import openpi.training.optimizer as _optimizer
 import openpi.training.profiling as profiling
 import openpi.training.sharding as sharding
@@ -195,7 +196,13 @@ def train_step(
 
 def main(config: _config.TrainConfig):
     init_logging()
-    logging.info(f"Running on: {platform.node()}")
+
+    # G1: bring up the multi-host runtime *before* any device/mesh use. No-op when single-process, so the
+    # single-host path is unchanged. After this, jax.device_count() is the GLOBAL device count and
+    # make_mesh(config.fsdp_devices) spans all processes with no further change.
+    distributed.maybe_initialize()
+
+    logging.info(f"Running on: {platform.node()} (process {jax.process_index()}/{jax.process_count()})")
 
     if config.batch_size % jax.device_count() != 0:
         raise ValueError(
