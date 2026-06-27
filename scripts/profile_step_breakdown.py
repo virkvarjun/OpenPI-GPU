@@ -55,6 +55,13 @@ def build_step(variant: str = "dummy", batch_size: int = 1, optimizer: str = "ad
     model = cfg.create(rng)
     model_def = nnx.graphdef(model)
     params = nnx.state(model)
+    # gemma_2b params/grads in fp32 alone exceed a 32GB GPU (~2.5B x 4B x2). Cast to bf16 for real variants --
+    # this is how mixed-precision training runs anyway, and attribution measures op structure, not numerics.
+    if not small:
+        params = jax.tree.map(
+            lambda x: x.astype(jnp.bfloat16) if hasattr(x, "dtype") and jnp.issubdtype(x.dtype, jnp.floating) else x,
+            params,
+        )
     obs, act = _fake_inputs(cfg, rng, batch_size=batch_size)
 
     def loss_fn(model, rng, obs, act):
