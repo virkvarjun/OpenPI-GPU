@@ -8,18 +8,21 @@ loss) through a faithful nnx value_and_grad + AdamW step, attributed by HLO name
 > and shrink the GEMM/attention share. Production proportions are HARDWARE-GATED — collect them by running
 > this attribution on train.py's ptrain_step on a real accelerator slice.
 
-Window: 8 steps | wall 15912.668 ms/step | device-busy 4547.263 ms/step
+Window: 8 steps | wall 13154.037 ms/step | device-busy 2856.452 ms/step
 
 | category | device ms/step | % wall |
 |----------|---------------:|-------:|
-| attention | 143.4074 | 0.9% |
-| matmul-FFN | 218.0563 | 1.4% |
+| vision | 163.3814 | 1.2% |
+| image-aug | 3.8081 | 0.0% |
+| embedding | 1.1324 | 0.0% |
+| attention | 75.5700 | 0.6% |
+| matmul-FFN | 8.4277 | 0.1% |
 | collectives | 0.0000 | 0.0% |
-| optimizer | 679.8666 | 4.3% |
-| other | 3505.9326 | 22.0% |
-| data-wait | 11365.4048 | 71.4% |
+| optimizer | 0.0000 | 0.0% |
+| other | 2604.1319 | 19.8% |
+| data-wait | 10297.5855 | 78.3% |
 
-**Dominant (this run): `data-wait`** (71.4% of wall).
+**Dominant (this run): `data-wait`** (78.3% of wall).
 
 ## Decision gate (apply to PRODUCTION proportions, not these CPU/dummy ones)
 - **data-wait dominates** → input pipeline: image decode, prefetch depth, H2D overlap.
