@@ -487,17 +487,22 @@ cluster_detection_method, initialization_timeout=300, coordinator_bind_address)`
   `step_ms / TFLOP·s⁻¹ / MFU% / {compute|memory}-bound` report + trace. **Absolute MFU is only meaningful on
   real accelerators** — on CPU sim it validates the plumbing + relative step time (flagged).
 
-## Milestones (small commits; single-host green at every commit)
-- **M1 (G6)** — `profiling.py` + train.py `--profile` wiring + smoke test (finite step_ms & flops). Baseline
-  single-host number. `feat: device-side MFU/roofline profiling harness`.
-- **M2 (G1)** — `distributed.py` + train.py wiring; verify on localhost multi-process that `device_count()` is
-  global and the mesh spans processes; no-op-single-process test. `feat: jax.distributed bring-up (no-op single-process)`.
-- **M3 (G2+G3)** — remove guards (`refactor:`), then torch within-batch sampler + RLDS `.shard` (`feat:`), with
-  no-duplication + determinism tests (pure index-stream tests need no model).
-- **M4 (correctness)** — single-vs-multi **parity** (FakeData → torch path → exact match) + single-host-untouched;
-  get the V1 suite green. `test: multi-host parity, no-duplication, determinism on cheap ladder`.
-- **M5 (scaling scaffold)** — run 1/2/4/8 sim devices / local processes; `FINDINGS.md` with step-time/MFU table;
-  flag the real-HW caveat. `docs: scaling-study scaffold + FINDINGS (cheap-ladder, HW-gated)`.
+## Milestones (small commits; single-host green at every commit) — **V1 COMPLETE on cheap ladder**
+- **M1 (G6)** ✅ `badd806`+`50f5aa2` — `profiling.py` (measure_step_time/step_cost/mfu_report/profile_step) +
+  env-gated `train.py` `--profile` wiring; 7 tests green; baseline line emitted on CPU sim.
+- **M2 (G1)** ✅ `bc78a59` — `distributed.py::maybe_initialize()` (no-op single-process) + `train.py` first-line
+  wiring + `scripts/launch_local.py`; integration test spawns 2 procs, asserts global `device_count` + mesh span.
+- **M3 (G2+G3)** ✅ `583c7bf`+`912adac` — within-batch sharding math (`data_sharding.py`, 10 tests) + removed both
+  `NotImplementedError` guards + torch `_WithinBatchShardSampler` + RLDS per-source `.shard` (flagged HW-gated).
+- **M4 (correctness)** ✅ `da91793` — multi-process parity via the real `make_array_from_process_local_data`:
+  per-process shard == reference slice, and global loss+grad == single-process reference (fp32 tol). Full V1
+  suite 21 green.
+- **M5 (scaling scaffold)** ✅ `612eeb3` — `scripts/scaling_study.py` sweeps 1/2/4/8 devices through the profiler
+  → `FINDINGS.md`; CPU shared-core artifact flagged; real throughput/interconnect HW-gated.
+
+**HW/env-gated (flagged, not run here):** the literal pi0 model multi-host step (heavy env + `jax[cuda12]` has no
+macOS wheels); absolute MFU; real interconnect scaling; RLDS `.shard` on a real DROID slice. Parity is proven
+with the real assembly primitive + a stand-in loss (the *data path* is what V1 changes).
 
 ## Tests (V1 subset; written with each milestone)
 parity (bf16 tol, K steps, torch/FakeData) · no-duplication (⋃ disjoint, covers shard set) · determinism
