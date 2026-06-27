@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 import openpi.models.model as _model
+from openpi.training import data_sharding
 import openpi.training.config as _config
 from openpi.training.droid_rlds_dataset import DroidRldsDataset
 import openpi.transforms as _transforms
@@ -319,7 +320,18 @@ def create_torch_data_loader(
         else:
             local_batch_size = batch_size
     else:
+        # JAX path: each process reads 1/process_count of the global batch. When multi-process, use a
+        # within-batch shard sampler so the per-step global batch composition matches single-process (G3).
         local_batch_size = batch_size // jax.process_count()
+        if jax.process_count() > 1:
+            sampler = _WithinBatchShardSampler(
+                dataset_len=len(dataset),
+                global_batch_size=batch_size,
+                process_index=jax.process_index(),
+                process_count=jax.process_count(),
+                shuffle=shuffle,
+                seed=seed,
+            )
 
     logging.info(f"local_batch_size: {local_batch_size}")
     data_loader = TorchDataLoader(
@@ -409,9 +421,6 @@ class TorchDataLoader:
                 execute in the main process.
             seed: The seed to use for shuffling the data.
         """
-        if jax.process_count() > 1:
-            raise NotImplementedError("Data loading with multiple processes is not supported.")
-
         if len(dataset) < local_batch_size:
             raise ValueError(f"Local batch size ({local_batch_size}) is larger than the dataset size ({len(dataset)}).")
 
@@ -475,6 +484,40 @@ def _collate_fn(items):
     return jax.tree.map(lambda *xs: np.stack([np.asarray(x) for x in xs], axis=0), *items)
 
 
+class _WithinBatchShardSampler(torch.utils.data.Sampler):
+    """Per-process index sampler that shards *within* each global batch (G3).
+
+    Yields this process's flat index stream for one epoch (see ``data_sharding.process_index_stream``). The torch
+    DataLoader batches it into ``local_batch_size`` groups; reassembling those across processes reproduces the
+    single-process global batch, which is what makes multi-process training match single-process.
+    """
+
+    def __init__(
+        self,
+        *,
+        dataset_len: int,
+        global_batch_size: int,
+        process_index: int,
+        process_count: int,
+        shuffle: bool,
+        seed: int,
+    ):
+        self._indices = data_sharding.process_index_stream(
+            dataset_len,
+            global_batch_size,
+            process_index,
+            process_count,
+            shuffle=shuffle,
+            seed=seed,
+        ).tolist()
+
+    def __iter__(self):
+        return iter(self._indices)
+
+    def __len__(self) -> int:
+        return len(self._indices)
+
+
 def _worker_init_fn(worker_id: int) -> None:
     """Tell JAX inside the worker process not to preallocate the GPU memory."""
     # NOTE: This is called after jax is imported inside the worker process. This
@@ -498,9 +541,6 @@ class RLDSDataLoader:
     ):
         self._dataset = dataset
         self._num_batches = num_batches
-
-        if jax.process_count() > 1:
-            raise NotImplementedError("Data loading with multiple processes is not supported.")
 
         if sharding is None:
             # Use data parallel sharding by default.

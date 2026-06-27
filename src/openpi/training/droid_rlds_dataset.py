@@ -13,6 +13,7 @@ import json
 import logging
 from pathlib import Path
 
+import jax
 import tqdm
 
 import openpi.shared.download as download
@@ -68,6 +69,15 @@ class DroidRldsDataset:
             dataset = dl.DLataset.from_rlds(
                 builder, split="train", shuffle=shuffle, num_parallel_reads=num_parallel_reads
             )
+
+            # G3 (multi-host): each process reads a DISJOINT slice of every source dataset, sharded BEFORE the
+            # weighted mixing below (sample_from_datasets) so per-source weights are preserved per host and there
+            # is no cross-host duplication. Sharding this early also means each host only reads ~1/N of the
+            # trajectories. No-op single-host. NOTE: tf.data .shard partitions by upstream element index, so
+            # correctness requires the pre-shard ordering to be identical across hosts; verify against a real
+            # multi-host DROID slice (HW/data-gated -- not runnable on the cheap CPU ladder).
+            if jax.process_count() > 1:
+                dataset = dataset.shard(jax.process_count(), jax.process_index())
 
             # Filter out any unsuccessful trajectories -- we use the file name to check this
             dataset = dataset.filter(
