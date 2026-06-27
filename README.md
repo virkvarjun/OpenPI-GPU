@@ -1,3 +1,11 @@
+<!-- SHARDER BANNER -->
+> ⚠️ **This is not upstream openpi.** This repo (`OpenPI-JAX-`) **vendors** a copy of Physical Intelligence's
+> openpi as the working tree for the **Sharder** project — a fault-tolerant, multi-host JAX training path.
+> See **[SHARDER.md](SHARDER.md)** and **[PLAN.md](PLAN.md)**. The original from-scratch JAX recreation lives on
+> the `scaffold` branch. The upstream README follows unmodified below.
+
+---
+
 # openpi
 
 openpi holds open-source models and packages for robotics, published by the [Physical Intelligence team](https://www.physicalintelligence.company/).

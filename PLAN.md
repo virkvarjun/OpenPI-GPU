@@ -240,17 +240,15 @@ and fall back to stock `CheckpointManager` + `ArrayRestoreArgs` resharding where
 
 ---
 
-## 7. Open decisions for you (blocking before I write Core code)
+## 7. Open decisions — RESOLVED (2026-06-26)
 
-1. **Repo target.** Sharder modifies real `openpi` internals (`training/sharding.py`, `data_loader.py`,
-   `checkpoints.py`, `scripts/train.py`). Should this repo (`OpenPI-JAX-`) become a **fork of upstream openpi**
-   where I add Sharder under `src/openpi/training/` (clean upstream PRs) — my current from-scratch JAX scaffold
-   moved to a branch/subdir? Or keep them side by side? *Recommendation: fork upstream openpi as the working
-   tree; preserve the scaffold on a branch.* This is a "large refactor" so I'm not doing it without your call.
-2. **First accelerator target for the code path:** TPU-style (no-arg init) or GPU/CPU (env-driven init) as the
-   primary, with the other as the guarded alternative? *Recommendation: GPU/CPU env-driven first (matches the
-   localhost-multiprocess cheap ladder and comet), TPU path added but only ⛔-verifiable.*
-3. **Core 1 scope check:** OK to re-aim Core 1 at **multi-host init + grad-accum** (since the 2D mesh already
-   exists), keeping your `data`/`fsdp` naming and single-host-identical guarantee?
+1. **Repo target → VENDOR, not a GitHub fork.** This repo stays its own project and vendors upstream openpi as
+   the working tree; Sharder edits `src/openpi/...` directly. The from-scratch scaffold is preserved on the
+   `scaffold` branch. (Done — see the "Vendor upstream …" commit and [SHARDER.md](SHARDER.md).)
+2. **First accelerator target → GPU/CPU env-driven init first**, with the TPU no-arg path added as the guarded
+   alternative (⛔-verifiable only).
+3. **Core 1 scope → re-aimed at multi-host init + grad-accum**, keeping the `data`/`fsdp` naming and the
+   single-host-identical guarantee. (The 2D mesh already exists; we do not rebuild it.)
 
-**Stopping here for your review per Step 0. No Core code written.**
+**Next:** stand up a CPU-only dev env (jax 0.5.3 CPU) for the cheap ladder, confirm the vendored tree imports +
+upstream tests pass under CPU simulation, then begin Core 1 + Core 4 in small, explained commits.
