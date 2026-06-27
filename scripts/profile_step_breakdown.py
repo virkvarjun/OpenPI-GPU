@@ -14,6 +14,7 @@ are what's delivered here.
 
 from __future__ import annotations
 
+import argparse
 import tempfile
 
 import flax.nnx as nnx
@@ -41,9 +42,14 @@ def _fake_inputs(cfg, rng, batch_size=1):
     return jax.tree.map(rand, obs_spec), jax.tree.map(rand, act_spec)
 
 
-def build_step():
+def build_step(variant: str = "dummy", batch_size: int = 1):
+    # On a real GPU/TPU slice, pass --variant gemma_2b for the production breakdown. On CPU keep `dummy`.
+    small = variant == "dummy"
     cfg = pi0_config.Pi0Config(
-        paligemma_variant="dummy", action_expert_variant="dummy", action_horizon=4, max_token_len=8
+        paligemma_variant=variant,
+        action_expert_variant="dummy" if small else "gemma_300m",
+        action_horizon=4 if small else 50,
+        max_token_len=8 if small else 48,
     )
     rng = jax.random.key(0)
     model = cfg.create(rng)
@@ -51,7 +57,7 @@ def build_step():
     params = nnx.state(model)
     tx = optax.adamw(1e-4)
     opt_state = tx.init(params)
-    obs, act = _fake_inputs(cfg, rng)
+    obs, act = _fake_inputs(cfg, rng, batch_size=batch_size)
 
     def train_step(params, opt_state, rng, obs, act):
         model = nnx.merge(model_def, params)
@@ -72,12 +78,19 @@ def build_step():
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--variant", default="dummy", help="paligemma variant: dummy (CPU) | gemma_2b (real GPU/TPU)")
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument("--iters", type=int, default=8)
+    args = parser.parse_args()
+
     # openpi guards model fns with jaxtyping runtime checks; disable them for AOT lowering/profiling (matches
     # how training/checkpoints.py wraps jitted regions).
     with at.disable_typechecking():
-        run_step, compiled = build_step()
+        run_step, compiled = build_step(variant=args.variant, batch_size=args.batch_size)
         trace_dir = tempfile.mkdtemp()
-        bd = attribution.attribute_step(run_step, compiled, trace_dir=trace_dir, warmup=2, iters=8)
+        bd = attribution.attribute_step(run_step, compiled, trace_dir=trace_dir, warmup=args.warmup, iters=args.iters)
     pct = bd.percentages()
 
     lines = [
