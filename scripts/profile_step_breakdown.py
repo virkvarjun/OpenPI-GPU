@@ -97,7 +97,7 @@ def main() -> None:
         "| category | device ms/step | % wall |",
         "|----------|---------------:|-------:|",
     ]
-    order = ["attention", "matmul-FFN", "collectives", "optimizer", "other", "data-wait"]
+    order = [*attribution.CATEGORIES, "data-wait"]
     for c in order:
         ms = (bd.category_us.get(c, bd.data_wait_us if c == "data-wait" else 0.0)) / 1e3 / bd.n_steps
         lines.append(f"| {c} | {ms:.4f} | {pct[c] * 100:.1f}% |")

@@ -32,36 +32,50 @@ from typing import Any
 
 import jax
 
-CATEGORIES = ("attention", "matmul-FFN", "collectives", "optimizer", "other")
+CATEGORIES = ("vision", "image-aug", "embedding", "attention", "matmul-FFN", "collectives", "optimizer", "other")
 
-# Op-type patterns on the bare HLO instruction name (fallbacks when scope is absent/ambiguous).
+# Patterns built from the REAL pi0 HLO scope vocabulary (dumped from the compiled model), not guesses:
+#   SigLIP vision -> encoderblock / MultiHeadDotProductAttention_0 / encoder_norm
+#   gemma attention -> attn ; FFN/matmul -> dot_general ; gelu -> erf
+#   augmax on-device image augmentation -> pixelwise / map_coordinates / piecewise  (the bulk of old "other")
 _COLLECTIVE_RE = re.compile(r"all-reduce|all-gather|reduce-scatter|collective-permute|all-to-all|ppermute")
-_MATMUL_RE = re.compile(r"\b(dot|convolution|conv)\b|dot\.|convolution\.")
-_SOFTMAX_RE = re.compile(r"exponential|logistic|reduce-window|reduce_max|reduce_sum")
+_MATMUL_RE = re.compile(r"(^|[^a-z])(dot|convolution|conv)([^a-z]|$)|dot_general|dot\.|convolution")
+_SOFTMAX_RE = re.compile(r"exponential|logistic|reduce-window|reduce_max|reduce_sum|softmax")
+_OPT_RE = re.compile(r"adam|scale_by|optax|optimizer|ema_update|/opt\b")
+_IMAGEAUG_RE = re.compile(r"pixelwise|map_coordinates|piecewise|augmax|random_crop|random_resize|image_aug")
+_VISION_RE = re.compile(r"encoderblock|siglip|\bvit\b|vision|img_encoder|patch_embed|multiheaddotproductattention")
+_EMBED_RE = re.compile(r"embed|embedder|input_embedding|pos_embed|positional|\bwte\b|token_emb")
+_FFN_RE = re.compile(r"\bmlp\b|ffn|feed_forward|dense|gelu|swiglu|gating|\berf\b|einsum")
 
 
 def classify(instruction: str, scope: str) -> str:
-    """Map an HLO instruction (bare name) + its scope path (metadata op_name) to a category."""
+    """Map an HLO instruction (bare name) + its scope path (metadata op_name) to a category.
+
+    Priority matters: collectives/optimizer first (unambiguous), then vision/image-aug/embedding (so SigLIP and
+    augmentation don't leak into attention/matmul), then gemma attention (softmax only — the audited headroom),
+    then matmul-FFN (all GEMMs incl. the attention QK/AV dots, which XLA saturates), else other.
+    """
     s = scope.lower()
     name = instruction.lower()
 
-    # Collectives first — unambiguous and the multi-host signal.
     if _COLLECTIVE_RE.search(name) or _COLLECTIVE_RE.search(s):
         return "collectives"
-    # Optimizer: scoped under the optimizer/optax update.
-    if re.search(r"adam|optimizer|scale_by|/opt|update|ema", s):
+    if _OPT_RE.search(s):
         return "optimizer"
-    # Attention: the softmax (exp/max/sum/divide). The audit says this is the only attention headroom; the
-    # attention GEMMs (QK^T, AV) stay in matmul-FFN because XLA already saturates them.
-    if "attention" in s and (_SOFTMAX_RE.search(s) or _SOFTMAX_RE.search(name) or "softmax" in s):
+    # On-device image augmentation (augmax) — surfaced explicitly; was the dominant chunk of old "other".
+    if _IMAGEAUG_RE.search(s):
+        return "image-aug"
+    # SigLIP vision tower (incl. its own MHA softmax — counts as vision, not gemma attention).
+    if _VISION_RE.search(s):
+        return "vision"
+    if _EMBED_RE.search(s):
+        return "embedding"
+    # Gemma attention: only the softmax ops. The QK^T/AV dots fall through to matmul-FFN below.
+    if ("attn" in s or "attention" in s) and (_SOFTMAX_RE.search(name) or _SOFTMAX_RE.search(s)):
         return "attention"
-    if _SOFTMAX_RE.search(name) and "attention" in s:
-        return "attention"
-    # Matmul / FFN: all dots + the FFN/MLP elementwise.
-    if _MATMUL_RE.search(name) or re.search(r"mlp|ffn|feed_forward|dense|gelu|swiglu", s):
+    if _MATMUL_RE.search(name) or _FFN_RE.search(s):
         return "matmul-FFN"
-    # Bare softmax ops without scope still count as attention (best effort).
-    if _SOFTMAX_RE.search(name):
+    if _SOFTMAX_RE.search(name):  # bare softmax with no scope
         return "attention"
     return "other"
 
