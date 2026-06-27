@@ -252,3 +252,144 @@ and fall back to stock `CheckpointManager` + `ArrayRestoreArgs` resharding where
 
 **Next:** stand up a CPU-only dev env (jax 0.5.3 CPU) for the cheap ladder, confirm the vendored tree imports +
 upstream tests pass under CPU simulation, then begin Core 1 + Core 4 in small, explained commits.
+
+---
+
+# Core 2 — Host-sharded data pipeline
+
+## Step 2.0 — understand before building (this section). **No Core-2 code written; stop after this.**
+
+> ⚠️ **Repo-state caveat (read first).** At HEAD (`cc77bab`) the working tree is *vendored upstream openpi*;
+> **Core 1 and Core 4 are not committed here** (`src/openpi/training/{distributed,profiling,grad_accum}.py` are
+> absent; `scripts/train.py` has no `jax.distributed`/`process_index`). The design below therefore attaches to
+> the data axis that *already exists* in the vendored tree — `sharding.DATA_AXIS = ("batch","fsdp")` and the
+> `data_sharding = NamedSharding(mesh, P(DATA_AXIS))` built in `scripts/train.py:209`. Two of the Step-2.1 tests
+> (multi-process via `jax.distributed.initialize()`; the Core-4 overlap profile) need Core 1 / Core 4 actually
+> in-tree. **Before approving 2.1, confirm where Core 1/4 live (or have me build them first).**
+
+### 2.0.1 — Spec of openpi's CURRENT data path (verified, file:line)
+
+There are **two** loaders, chosen in `create_data_loader` (`data_loader.py:223-268`) by whether
+`data_config.rlds_data_dir` is set:
+
+**A) Default LeRobot loader (map-style / torch).** `create_torch_data_loader` (`:271-337`).
+- Dataset is **map-style** (`Dataset` protocol, `__getitem__`+`__len__`, `:22-29`): `LeRobotDataset` (random
+  access) wrapped in `TransformedDataset` (repack → data transforms → `Normalize` → model transforms,
+  `:172-191`). `repo_id == "fake"` → `FakeDataset` of random spec-shaped samples (`:99-127`) — **our CPU-ladder
+  dataset, no downloads/weights needed**.
+- Batched & iterated by `TorchDataLoader` (`:381-468`): a `torch.utils.data.DataLoader` with
+  `batch_size=local_batch_size`, `shuffle`, seeded `torch.Generator` (`:432-433`), `drop_last=True`,
+  `collate_fn=_collate_fn` (np.stack, `:471-475`), `num_workers` via `spawn` + `persistent_workers` (`:428-446`).
+- **Host→device handoff:** each yielded numpy batch becomes a *global* `jax.Array` via
+  `jax.make_array_from_process_local_data(self._sharding, x)` (`:466`). Default sharding when none passed is a 1D
+  `Mesh(jax.devices(), ("B",))`, `P("B")` (`:420-425`).
+- **Per-host batch already computed:** `local_batch_size = batch_size // jax.process_count()` (`:322`).
+- **The hard block:** `if jax.process_count() > 1: raise NotImplementedError("Data loading with multiple
+  processes is not supported.")` (`:412`). And **no `jax.process_index()` anywhere** → if the guard were simply
+  removed, every host would draw the *same* shuffled indices and `make_array_from_process_local_data` would
+  assemble a global batch of **duplicated** data. This is the core gap.
+- PyTorch-DDP branch (`:309-318`) *does* use a `DistributedSampler` (disjoint per rank) — but only on
+  `framework=="pytorch"`, not the JAX path.
+
+**B) RLDS/tf.data DROID loader (streaming / iterable).** `create_rlds_data_loader` (`:340-378`) →
+`DroidRldsDataset` (`droid_rlds_dataset.py:36-248`).
+- Pure **tf.data** graph built in `__init__`: `dl.DLataset.from_rlds(... num_parallel_reads=AUTOTUNE)` (`:68-70`)
+  → success-filter → `repeat()` → `traj_map(restructure/chunk_actions, AUTOTUNE)` → `flatten(AUTOTUNE)` →
+  idle-filter → `frame_map(decode_images, AUTOTUNE)` (`:171-222`). **Multi-dataset mixing already exists here**:
+  per-source `RLDSDataset.weight` (`:28-33`, must sum to 1.0 `:62`) fed to
+  `dl.DLataset.sample_from_datasets(all_datasets, weights=weights)` (`:232`), then a global
+  `shuffle(250_000)` → `batch(batch_size)` → `with_ram_budget(1)` (`:233-236`).
+- Iterated via `dataset.as_numpy_iterator()` (`:243`); `RLDSDataLoader` (`data_loader.py:486-527`) is a shallow
+  wrapper that just applies the **same** `make_array_from_process_local_data` handoff (`:527`) and the **same**
+  `process_count()>1` block (`:502`). No `process_index` / `shard()` anywhere.
+
+**C) Why the RLDS loader is pinned to `num_workers=0` (the real reason).**
+`num_workers` is a `TrainConfig` field (`config.py:509`, default 2) but it is **only consumed by the torch
+path** (`data_loader.py:264,332,439`); `create_rlds_data_loader` never threads it anywhere. Configs that use
+RLDS set `num_workers=0` with the comment *"RLDS DataLoader requires num_workers=0, handles multi-processing
+internally"* (`config.py:859,893`; `misc/polaris_config.py:68…`). The substance:
+- tf.data **owns its parallelism in-process** via C++ threadpools — `AUTOTUNE` parallel file reads (`:69`) and
+  parallel `traj_map`/`flatten`/`frame_map` (`:171-222`), plus internal prefetch and `with_ram_budget` (`:236`).
+- Wrapping that in a torch `DataLoader` with `num_workers>0` uses **`spawn`** (`data_loader.py:430`), and each
+  worker would **rebuild the entire tf.data graph** — re-reading files, re-allocating the 250k-frame shuffle
+  buffer, rebuilding the `StaticHashTable` idle-filter, and re-running the process-global
+  `tf.config.set_visible_devices([], "GPU")` (`droid_rlds_dataset.py:59`). That multiplies RAM/I/O and risks TF
+  init conflicts, for **zero** benefit since tf.data is already parallel.
+- **Decision (understanding-based, not reflex): KEEP `num_workers=0` for the RLDS path.** Host scaling for RLDS
+  comes from **`dataset.shard(process_count, process_index)` inside the tf.data graph**, not from torch workers.
+  (We will, separately, still allow `num_workers>0` on the *LeRobot* path — that path benefits from worker
+  parallelism for Python-side `__getitem__`/transform CPU work.)
+
+**D) Iterator state / resumability — NONE today.** The `DataLoader` protocol exposes only `data_config()`
+(`data_loader.py:42-50`); both loaders loop `while True` with a local `num_items` counter (`:452-468`,
+`:515-527`). `checkpoints.restore_state` does `del data_loader` (`checkpoints.py:95`). So a resumed run **does
+not** continue on the right examples — the gap Core 2 must close and Core 3 will persist.
+
+### 2.0.2 — Diff vs `openpi-comet`, and our headroom
+
+| Concern | `openpi-comet` (prior art) | Sharder headroom |
+|---|---|---|
+| Host sharding (LeRobot) | Replaced the `NotImplementedError` with static **`chunks[process_index::process_count]`** index striping (`data_loader.py:353-377`), `seed+process_index` | A **deterministic global-shuffle → disjoint per-host slice** via a custom index sampler (not raw mod-striping), so shuffle quality is preserved and the slice is provably a partition |
+| RLDS host sharding | Not added (rode the existing mesh; RLDS path largely untouched) | `dataset.shard(host_count, host_id)` attached **early per-source** in the tf.data graph |
+| Multi-dataset mixing | `data: Sequence[DataConfigFactory]` + `sample_weights`, but the actual weighted sampling is **offloaded to an external `behavior` package** (not in-repo, not host-consistent) | A **first-class, in-repo** mixing knob; reuse/extend the RLDS `weight` mechanism that already exists upstream; deterministic and identical mixture across hosts |
+| Resume / iterator state | None | **Checkpointable iterator position** (`get_state`/`set_state`) → exact resume, wired to Core 3 |
+| Upstream-mergeability | New `train_dist.py`, external dep, disabled async ckpt | **Additive, single-host-identical, no new heavy deps**, behind `process_count()`/weight knobs — designed to be a clean upstream PR |
+
+### 2.0.3 — Proposed design
+
+**Primary path = the LeRobot map-style loader.** Map-style + a custom sampler gives *explicit control over
+example order and position*, which makes all four properties (no-dup, determinism, mixing, resume) clean and
+exactly checkpointable. (Streaming tf.data resume needs heavy tf iterator checkpoints — handled as the secondary
+path, coarser.)
+
+1. **Deterministic host-aware sampler** (new). A seeded sampler produces one global permutation per epoch
+   (`epoch_seed = base_seed ⊕ epoch`) and yields **only this host's disjoint slice**
+   `perm[process_index :: process_count]` (a true partition; asserted in tests). Replaces both the
+   `process_count()>1` guard and the default JAX shuffle. Single-host (`process_count()==1`) → identical order to
+   today.
+2. **Checkpointable position.** Sampler tracks `(epoch, index_within_epoch)` and its base seed → `get_state()` /
+   `set_state()`. Restoring reconstructs the exact remaining stream (no repeats/skips).
+3. **Multi-dataset mixing knob.** Generalize `TrainConfig.data` to accept a weighted list (mirroring comet's
+   ergonomics but in-repo): a `ConcatDataset` of the per-config datasets + a **weighted index sampler** that
+   draws source-dataset ids by configured proportion from a seeded stream, then a within-source index — fully
+   deterministic and identical across hosts (each host then takes its disjoint slice). Reuse the existing
+   `RLDSDataset.weight` semantics for the RLDS path; add an analogous top-level `sample_weights` for LeRobot.
+4. **Mesh consistency.** Keep yielding global arrays via `make_array_from_process_local_data` along the existing
+   `DATA_AXIS` (Core 1's `data` axis) — unchanged handoff, correct per-host local batch (`batch_size //
+   process_count`).
+5. **Prefetch/overlap.** Background host→device prefetch (depth N) so batch *k+1* transfers during step *k*’s
+   compute; validated as *hidden* via the Core-4 profiler (HW-gated for true throughput).
+6. **RLDS secondary path.** Add `dataset.shard(process_count, process_index)` early per-source in
+   `DroidRldsDataset`; keep `num_workers=0`; iterator-state via tf.data checkpoint (or documented coarse resume
+   first). Mixing already supported by `weight`.
+
+**Iterator-state hook → Core 3.** Extend the `DataLoader` protocol with `get_state() -> PyTree` /
+`set_state(state)`. Core 3 saves it as a **per-process Orbax Composite `"data_iter"` item** (the MaxText
+`GrainCheckpointHandler` pattern), restored topology-independently alongside the train state.
+
+### 2.0.4 — Exact files touched (Step 2.1)
+
+- `src/openpi/training/data_loader.py` — replace the two `process_count()>1` guards with the host-aware sampler;
+  add `get_state`/`set_state` to the `DataLoader` protocol + `DataLoaderImpl`/`TorchDataLoader`/`RLDSDataLoader`;
+  wire prefetch; weighted multi-dataset sampling for the torch path.
+- **New** `src/openpi/training/data_sharding.py` — the deterministic host-aware index sampler, the weighted
+  multi-dataset index mixer, and the iterator-state (`get/set`) helpers (kept separate so `data_loader.py` stays
+  a thin wiring layer and the logic is unit-testable in isolation).
+- `src/openpi/training/droid_rlds_dataset.py` — add `process_index`/`process_count` params and early
+  `.shard(...)`; keep `num_workers=0`.
+- `src/openpi/training/config.py` — add the in-repo mixing knob (`sample_weights` / list-valued `data`) to the
+  `TrainConfig`/`DataConfigFactory` registry; document the kept `num_workers` semantics.
+- **New** `src/openpi/training/data_sharding_test.py` (+ extend upstream `data_loader_test.py`) — the five tests
+  below, on the CPU-sim ladder with `FakeDataset`.
+
+### 2.0.5 — Test plan (cheap-validation ladder)
+
+| Test | Mechanism | Asserts |
+|---|---|---|
+| No-duplication | 8 sim hosts (`--xla_force_host_platform_device_count=8` and/or N localhost processes), `FakeDataset` | ⋃ per-host index slices = full shard set, pairwise ∩ = ∅ over an epoch |
+| Determinism | two runs, same config+seed | identical example order **and** identical loss inputs |
+| Mixing fidelity | K datasets, configured weights, N batches | realized proportions ≈ weights within tolerance |
+| Resume correctness | `get_state` mid-epoch → `set_state` → continue | stream resumes with **no repeated or skipped** examples |
+| Overlap sanity | Core-4 profiler | data-wait hidden behind compute on sim devices *(true throughput is HW-gated — flagged)* |
+
+**STOP — awaiting your review of this section before writing any Core-2 code.**
