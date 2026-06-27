@@ -393,3 +393,128 @@ path, coarser.)
 | Overlap sanity | Core-4 profiler | data-wait hidden behind compute on sim devices *(true throughput is HW-gated — flagged)* |
 
 **STOP — awaiting your review of this section before writing any Core-2 code.**
+
+---
+
+# Sharder V1 — true multi-HOST training (branch `feat/jax-multihost-v1`)
+
+> **This section is the authoritative, in-scope plan for V1 and supersedes the broader scoping above for this
+> branch.** V1 is deliberately narrow: bring openpi's *existing* JAX/FSDP path up across multiple hosts. We do
+> **not** touch the model, the mesh, FSDP, Orbax, or DROID mixing — those already exist and work.
+
+## V1 scope (the only in-scope work)
+- **G1** — `jax.distributed.initialize()` in `scripts/train.py:main()`, a **no-op when single-process**.
+- **G2** — remove the hard `raise NotImplementedError("Data loading with multiple processes is not supported.")`
+  in both `TorchDataLoader` and `RLDSDataLoader`.
+- **G3** — per-process **disjoint, deterministic** dataset sharding (machine *k* of *N* reads a non-overlapping
+  slice), for **both** the torch (LeRobot) and RLDS (DROID) loaders. Keep the existing
+  `make_array_from_process_local_data` assembly. **No new mixing-weight knob** (DROID already has one).
+- **G6** — a device-side `jax.profiler` MFU/roofline harness to measure step time + device utilization.
+- **Correctness:** multi-process learning must **match** single-process (bf16 tol over K steps).
+
+**Explicitly OUT of V1** (deferred / not in scope): G4 exact-resume / iterator-state checkpointing (leave the
+`del data_loader` in `restore_state` alone — flagged for V1.1), G5 fault tolerance / elastic restart, gradient
+accumulation (see audit below — not present, not needed), any model / mesh / FSDP / mixing / serving changes.
+
+## Step-0 audit findings (verified this session)
+1. **No redundant/conflicting code to revert.** `diff -rq src/openpi <pristine upstream clone>` is **empty** —
+   our `src/openpi` is byte-identical to upstream openpi. The earlier "build a 2D mesh" premise only ever lived
+   in PLAN.md *prose*; **zero** source changes were made to `make_mesh`/`fsdp_sharding`/`train_step`/loaders.
+   `training/` contains only upstream files (no `distributed.py`/`profiling.py`/`grad_accum.py`). **Recommended
+   action: nothing to revert in code; this V1 section corrects the plan's scope.**
+2. **Q(a) — gradient accumulation? NO.** `scripts/train.py:train_step` (`:136-191`) computes a single
+   `nnx.value_and_grad(loss_fn, argnums=DiffState(0, trainable_filter))` over the full batch, then `tx.update` +
+   `optax.apply_updates`. No `scan`/`remat`/microbatch (grep confirms). **⇒ no scan+remat work in V1.**
+3. **Q(b) — RLDS process-aware structure? ABSENT.** `droid_rlds_dataset.py` has no `process_index`/
+   `process_count`/`.shard`; the only relevant op is `sample_from_datasets(all_datasets, weights)` (`:232`).
+   **⇒ G3 adds per-source `.shard(...)` before `sample_from_datasets`, built from scratch.**
+
+## API verification (against installed jax 0.5.3, not memory)
+`jax.distributed.initialize(coordinator_address, num_processes, process_id, local_device_ids,
+cluster_detection_method, initialization_timeout=300, coordinator_bind_address)` ✓;
+`jax.distributed.is_initialized()` ✓; `jax.{process_index,process_count,device_count,local_device_count}` ✓;
+`jax.make_array_from_process_local_data(sharding, local_data, global_shape=None)` ✓;
+`compiled.cost_analysis()['flops']` ✓ (device FLOPs for MFU); `--xla_force_host_platform_device_count=N` ✓.
+> Note: on **CPU** `initialize()` does **not** auto-detect — coordinator/num_processes/process_id must be passed
+> explicitly (our localhost launcher provides them). `jax[cuda12]==0.5.3` has no macOS wheels, so local dev uses
+> **CPU jax 0.5.3** (installed & verified); GPU/TPU init is ⛔ HW-gated.
+
+## Design — exact files & functions
+
+### G1 — cluster bring-up  → **new** `src/openpi/training/distributed.py`, edit `scripts/train.py`
+- `maybe_initialize() -> None`: if `jax.distributed.is_initialized()` → return; if the rendezvous env vars are
+  present (coordinator address, num_processes, process_id — set by GPU/CPU launchers) →
+  `jax.distributed.initialize(...)` with them; **else no-op** (single-process). No env ⇒ single-host path is
+  byte-identical to today.
+- `scripts/train.py:main()`: call `distributed.maybe_initialize()` as the **first** line, before any device/mesh
+  use. `make_mesh(config.fsdp_devices)` then automatically spans all processes' devices (it already uses
+  `jax.device_count()`, which becomes global after init) — **no mesh change**.
+
+### G2 — remove the hard guard  → edit `src/openpi/training/data_loader.py`
+- Delete the `raise NotImplementedError("Data loading with multiple processes is not supported.")` at
+  `TorchDataLoader.__init__` (`~:412`) and `RLDSDataLoader.__init__` (`~:502`). Removal is paired with G3 in the
+  same milestone so multi-process is never enabled without disjoint sharding (no silent duplication).
+
+### G3 — per-process disjoint, deterministic sharding
+**Torch / LeRobot (map-style) → edit `data_loader.py`, optional small helper.**
+- Add a **jax-process-aware sampler** keyed on `jax.process_index()` / `jax.process_count()` that shards
+  **within each global batch** (the key to exact parity): given a deterministic global index order `order`
+  (seeded permutation if `shuffle`, else sequential), for global step `s` the global batch is
+  `order[s·B : (s+1)·B]`, and process *k* yields its contiguous slice `order[s·B + k·local : s·B + (k+1)·local]`
+  (`local = B // process_count`, already computed at `:322`). `make_array_from_process_local_data` then
+  reassembles the **identical** global batch in process order → **bit-parity** with single-process.
+  - *Why not vanilla `DistributedSampler`*: its `indices[rank::N]` interleaves across the whole dataset, not
+    within a batch, so the per-step global batch composition would differ from single-process and break parity.
+    We reuse its seeding idea but shard within-batch.
+- Single-host (`process_count()==1`) → the slice is the whole batch → identical order to today (additive).
+
+**RLDS / DROID (streaming) → edit `droid_rlds_dataset.py`.**
+- In `prepare_single_dataset`, immediately after `dl.DLataset.from_rlds(... shuffle=shuffle ...)` and **before**
+  `.repeat()` / per-frame maps and **before** `sample_from_datasets`, add
+  `dataset = dataset.shard(num_shards=jax.process_count(), index=jax.process_index())`. Each host reads a
+  disjoint file/element slice of **each** source → no cross-host duplication; per-source weights are preserved
+  per host (mixing unchanged). Requires the source **file-shuffle seed to be identical across hosts** so
+  `.shard` partitions the same ordering deterministically. *Verify `dl.DLataset.shard` passthrough to
+  `tf.data.Dataset.shard` at implementation time (flag).*
+- Keep `num_workers=0` for RLDS (tf.data owns parallelism; see Core-2 §2.0.1.C).
+
+### G6 — MFU/roofline harness  → **new** `src/openpi/training/profiling.py`, edit `scripts/train.py`
+- Device-side timing: median over a step window with `jax.block_until_ready`; optional `jax.profiler.trace`
+  (Perfetto) for the window. FLOPs/step from the compiled step's `cost_analysis()['flops']` (device-accurate);
+  bytes from cost_analysis for the roofline. `MFU = flops_per_step / (median_step_s · peak_device_flops)` with a
+  configurable `peak_device_flops`.
+- `scripts/train.py`: behind a `--profile` flag, capture steps `[N, N+k]`, emit a one-line
+  `step_ms / TFLOP·s⁻¹ / MFU% / {compute|memory}-bound` report + trace. **Absolute MFU is only meaningful on
+  real accelerators** — on CPU sim it validates the plumbing + relative step time (flagged).
+
+## Milestones (small commits; single-host green at every commit)
+- **M1 (G6)** — `profiling.py` + train.py `--profile` wiring + smoke test (finite step_ms & flops). Baseline
+  single-host number. `feat: device-side MFU/roofline profiling harness`.
+- **M2 (G1)** — `distributed.py` + train.py wiring; verify on localhost multi-process that `device_count()` is
+  global and the mesh spans processes; no-op-single-process test. `feat: jax.distributed bring-up (no-op single-process)`.
+- **M3 (G2+G3)** — remove guards (`refactor:`), then torch within-batch sampler + RLDS `.shard` (`feat:`), with
+  no-duplication + determinism tests (pure index-stream tests need no model).
+- **M4 (correctness)** — single-vs-multi **parity** (FakeData → torch path → exact match) + single-host-untouched;
+  get the V1 suite green. `test: multi-host parity, no-duplication, determinism on cheap ladder`.
+- **M5 (scaling scaffold)** — run 1/2/4/8 sim devices / local processes; `FINDINGS.md` with step-time/MFU table;
+  flag the real-HW caveat. `docs: scaling-study scaffold + FINDINGS (cheap-ladder, HW-gated)`.
+
+## Tests (V1 subset; written with each milestone)
+parity (bf16 tol, K steps, torch/FakeData) · no-duplication (⋃ disjoint, covers shard set) · determinism
+(identical example order across two runs) · single-host-untouched (additive guarantee) · MFU/scaling at 1/2/4/8
+(flagged HW-gated). *(G4 resume & G5 fault-injection tests are V1.1 — not written now.)*
+
+## Files touched (summary)
+**new:** `training/distributed.py` (G1), `training/profiling.py` (G6), a multihost data test (G3), `FINDINGS.md`
+(M5). **edit:** `scripts/train.py` (G1+G6 wiring), `training/data_loader.py` (G2 guards + G3 torch sampler),
+`training/droid_rlds_dataset.py` (G3 `.shard`). **untouched:** `sharding.py`, model, `checkpoints.py`,
+`optimizer.py`, mixing.
+
+## Env / HW-gated flags
+Local dev = CPU jax 0.5.3 (verified). Full parity test needs flax-nnx model deps (+`data_loader.py` imports
+torch/lerobot at module top) — heavier CPU env stood up at M1/M4; pure-sampler tests (no-dup/determinism) need
+neither. **HW-gated (scaffold + flag only):** absolute MFU, real interconnect scaling curve, GPU/TPU
+`initialize()` auto-detect, RLDS bit-parity (250k shuffle buffer makes exact single-vs-multi parity infeasible —
+RLDS asserts no-dup + determinism, not bit-parity; exact parity is proven on the map-style path).
+
+**STOP — Step 0 complete. Awaiting your approval of this V1 plan before writing M1 code.**
