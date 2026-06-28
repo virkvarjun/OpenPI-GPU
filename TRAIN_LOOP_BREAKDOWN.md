@@ -1,55 +1,50 @@
-# TRAIN_LOOP_BREAKDOWN — real loop with data pipeline (clean-wall data-wait)
+# TRAIN_LOOP_BREAKDOWN — real prefetching loader (clean-wall data-wait)
 
-> ✅ **Overlapped train.py-style loop**, `gemma_2b` bf16 fwd+bwd, batch=1, FakeData pipeline (host numpy gen +
-> collate + H2D, num_workers=0 equivalent), on an NVIDIA GeForce RTX 5090, via runpod. Wall is timed **without**
-> the profiler (Phase A) so it isn't inflated by trace overhead; op composition is from a separate short traced
-> window (Phase B). `data-wait = wall − device_busy` is genuine host/input cost not overlapped behind compute.
+> ✅ **Overlapped train.py-style loop with the REAL openpi `TorchDataLoader`** (num_workers=4 background
+> prefetch + collate + `make_array_from_process_local_data` H2D), `gemma_2b` bf16 fwd+bwd, **batch=1**, FakeData
+> (numpy gen, no disk), on an NVIDIA GeForce RTX 5090, via runpod. Clean wall timed WITHOUT the profiler
+> (Phase A); op composition from a separate traced window (Phase B).
 
-**Window: 12 steps | clean wall 130.58 ms/step | device-busy 10.89 ms/step | data-wait 119.69 ms/step (91.7%)**
+**Window: 12 steps | clean wall 130.38 ms/step | device-busy 10.90 ms/step | data-wait 119.48 ms/step (91.6%)**
 
 | category | device ms/step | % wall |
 |----------|---------------:|-------:|
-| matmul-FFN | 7.084 | 5.4% |
-| other | 3.394 | 2.6% |
+| matmul-FFN | 7.072 | 5.4% |
+| other | 3.416 | 2.6% |
 | vision | 0.257 | 0.2% |
-| embedding | 0.159 | 0.1% |
+| embedding | 0.156 | 0.1% |
 | attention | 0.000 | 0.0% |
 | collectives | 0.000 | 0.0% |
 | optimizer | 0.000 | 0.0% |
-| **data-wait** | 119.69 | **91.7%** |
+| **data-wait** | 119.48 | **91.6%** |
 
-## The measurement journey (why this number is trustworthy now)
+## The decisive finding: prefetch does NOT help
 
-- Single-step microbench: 95.5% "data-wait" — but it had a *fixed on-device input*, so that was pure
-  `jax.profiler` overhead, not data-wait. Flagged, not used.
-- First loop attempt: 95.9% "data-wait" at 264 ms/step wall — still inflated, because wall was timed *inside*
-  the profiler trace. Fixed by measuring clean wall (Phase A) separately from the traced op window (Phase B).
-- **This run:** clean wall is 130.6 ms/step (the ~134 ms difference *was* trace overhead). data-wait is now the
-  real, un-traced host/input cost: **119.7 ms/step vs 10.9 ms compute.**
+This num_workers=4 prefetching run (data-wait 119.5 ms) is **essentially identical** to the num_workers=0
+inline run (119.7 ms). Background workers hide *data production* — yet data-wait is unchanged. **So the host
+bottleneck is not generating/loading data**, it's the **per-step main-thread overhead that prefetch can't
+hide**:
+- **`make_array_from_process_local_data` called per-leaf, per-step** to assemble each batch as a (global) device
+  array — a multi-host primitive with real Python overhead, run on the main thread (~10 leaves/step).
+- **jitted-step dispatch** of the gemma_2b executable (large pytree of params/args).
 
-## What's solid
+## Big caveat: this is batch=1
 
-1. **GPU compute ≈ 10.9 ms/step and is GEMM-bound** (matmul-FFN ~65% of device-busy); **attention softmax ≈ 0%.**
-   ⇒ **No fused-attention headroom**, and the GEMMs are XLA-saturated (don't touch). Compute is *not* the
-   bottleneck.
-2. **The GPU is ~92% idle waiting on the host.** Even cleanly measured, the per-step host/input path
-   (≈120 ms) dwarfs compute (≈11 ms). The bottleneck is the **input/host pipeline**, not the model.
+At batch=1 the device does only ~11 ms of work while the *fixed* per-step host overhead (~119 ms) dominates —
+so 91.6% over-states host-boundness for realistic training. Larger batches amortize the per-step host cost over
+more samples **and** grow compute, so the compute/host ratio improves sharply. The batch-size sweep
+(`TRAIN_LOOP_SCALING.md`) characterizes this.
 
-## Caveat on the absolute number
+## Robust conclusions (across 4 consistent GPU runs)
 
-This uses the FakeData + `num_workers=0` path generated inline: **synchronous** host generation with **no
-prefetch**, and `make_array_from_process_local_data` called **per leaf per step** (multi-host-oriented, not
-optimized for single-host). So ~120 ms over-states what a tuned, prefetching loader would show. The
-*qualitative* conclusion is robust (host/input-bound, compute cheap, no attention headroom); the *absolute*
-data-wait should be re-measured against the real torch loader with `num_workers>0` prefetch (and a real dataset
-to fold in image-decode/disk).
+1. **GPU compute ≈ 11 ms/step, GEMM-bound, attention ≈ 0%** → no fused-attention / compute-kernel headroom; XLA
+   saturates the GEMMs.
+2. **The loop is host-bound at small batch by per-step assembly + dispatch, NOT by data production** (prefetch
+   doesn't move the needle).
 
 ## Routing decision (V2)
 
-- ❌ fused attention — attention ≈ 0% (ruled out by measurement).
-- ❌ matmul/GEMM — XLA-saturated.
-- ❌ collectives — single-host here; revisit multi-host.
-- ✅ **Input/host pipeline is the measured bottleneck.** Levers: background **prefetch + compute/load overlap**,
-  **batched H2D** (one transfer per batch instead of per-leaf `make_array_from_process_local_data`), and larger
-  batches to amortize per-step host overhead. Next: re-measure with the real prefetching loader to choose the
-  single highest-impact change, then BEFORE→change→AFTER with the parity gate.
+- ❌ fused attention / GEMM kernels — ruled out by measurement (attention 0%, GEMM saturated).
+- ✅ **Reduce per-step host overhead**: (a) **batched H2D** — assemble the batch with one device transfer
+  instead of per-leaf `make_array_from_process_local_data`; (b) **realistic batch sizes** to amortize fixed
+  dispatch/assembly cost. The batch sweep confirms which dominates before we implement.
