@@ -1,18 +1,15 @@
-"""V2: attribute the REAL train loop (data pipeline feeding the GPU) — trustworthy data-wait.
+"""V2: attribute the REAL train loop with the REAL prefetching data loader — trustworthy data-wait.
 
-The single-step microbench (`profile_step_breakdown.py`) can't measure data-wait: it re-runs a fixed on-device
-input, so `wall - device_busy` there is just host dispatch overhead. This script runs the actual train.py-style
-loop — build a batch on the host, dispatch the jitted step **asynchronously**, build the next batch while the GPU
-computes (overlap), block once at the end — and attributes it. Now `data-wait = wall - device_busy` is the
-genuine input-pipeline cost NOT hidden behind compute: if the host pipeline keeps the GPU fed, data-wait → ~0;
-if not, the input pipeline is the measured bottleneck.
+Runs the actual openpi `TorchDataLoader` (torch DataLoader with `num_workers` background prefetch, openpi's
+collate, and the `make_array_from_process_local_data` H2D assembly) feeding the real gemma_2b step, in a
+train.py-style overlapped loop (dispatch async, pull next batch during compute, block once). Wall is timed
+WITHOUT the profiler (Phase A — `jax.profiler.trace` has large per-op overhead that fakes "data-wait"); a short
+separate traced window (Phase B) gives the device op-category composition. `data-wait = clean_wall - device_busy`
+is then the genuine input-pipeline cost a *prefetching* loader leaves un-hidden behind compute.
 
-This mirrors the `FakeDataConfig` + `num_workers=0` path: per step we generate host (numpy) arrays of the model's
-input shapes, collate, and move them to the device via the same `make_array_from_process_local_data` assembly the
-real loader uses. We generate inline rather than importing `training.data_loader` to avoid its torch/lerobot
-import (whose CUDA libs conflict with jax on this box); with num_workers=0 the two paths are equivalent (no torch
-worker pool). Swap in a real LeRobot/RLDS loader to fold in image-decode/disk cost. gemma_2b runs forward+backward
-in bf16 (fits 32GB; full AdamW state would not).
+Dataset is a numpy generator over the model's input shapes (FakeData equivalent, no disk) so prefetch workers do
+no jax/CUDA work; swap in a LeRobot/RLDS dataset to fold in image-decode/disk. gemma_2b runs forward+backward in
+bf16 (fits 32GB; AdamW state would not).
 """
 
 from __future__ import annotations
@@ -26,9 +23,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import openpi.shared.array_typing as at
-import openpi.training.sharding as sharding
 import openpi.models.model as _model
+import openpi.shared.array_typing as at
+import openpi.training.data_loader as _data_loader
+import openpi.training.sharding as sharding
 from openpi.models import pi0_config
 from openpi.training import attribution
 
@@ -40,22 +38,45 @@ def _bf16(params):
     )
 
 
-def _host_array(spec):
-    """A host (numpy) array matching a ShapeDtypeStruct — the kind a real data loader produces before H2D."""
-    if spec.dtype == jnp.float32:
-        return np.random.standard_normal(spec.shape).astype(np.float32)
-    if spec.dtype == jnp.int32:
-        return np.random.randint(0, 100, spec.shape).astype(np.int32)
-    if spec.dtype == bool:
-        return np.ones(spec.shape, dtype=bool)
-    return np.zeros(spec.shape, dtype=spec.dtype)
+def _host_sample(spec):
+    """Numpy array of the per-sample shape (drop the batch dim; collate re-adds it). Workers: pure numpy, no jax."""
+    shape = tuple(spec.shape[1:])
+    dt = np.dtype(spec.dtype)
+    if dt == np.float32:
+        return np.random.standard_normal(shape).astype(np.float32)
+    if dt == np.int32:
+        return np.random.randint(0, 100, shape).astype(np.int32)
+    if dt == bool:
+        return np.ones(shape, dtype=bool)
+    return np.zeros(shape, dtype=dt)
+
+
+def _gen(spec_tree):
+    if isinstance(spec_tree, dict):
+        return {k: _gen(v) for k, v in spec_tree.items()}
+    return _host_sample(spec_tree)
+
+
+class _FakeNumpyDataset:
+    """Map-style dataset that generates host numpy samples — runs in torch prefetch workers without touching jax."""
+
+    def __init__(self, model_cfg, num_samples: int = 8192):
+        obs_spec, act_spec = model_cfg.inputs_spec(batch_size=1)
+        self._specs = {**obs_spec.to_dict(), "actions": act_spec}
+        self._n = num_samples
+
+    def __len__(self):
+        return self._n
+
+    def __getitem__(self, idx):
+        return _gen(self._specs)
 
 
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--variant", default="gemma_2b")
     p.add_argument("--batch-size", type=int, default=1)
-    p.add_argument("--num-workers", type=int, default=2, help="data loader prefetch workers")
+    p.add_argument("--num-workers", type=int, default=4, help="torch DataLoader prefetch workers")
     p.add_argument("--warmup", type=int, default=3)
     p.add_argument("--iters", type=int, default=12)
     args = p.parse_args()
@@ -71,18 +92,22 @@ def main() -> None:
     device = jax.devices()[0]
     mesh = sharding.make_mesh(1)
     data_sh = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
-    obs_spec, act_spec = model_cfg.inputs_spec(batch_size=args.batch_size)
-    obs_dict_spec = obs_spec.to_dict()
-
-    def next_batch():
-        # Host-side numpy generation + collate, then H2D via the loader's assembly primitive (the data pipeline).
-        obs_np = jax.tree.map(_host_array, obs_dict_spec)
-        act_np = jax.tree.map(_host_array, act_spec)
-        obs_dev = jax.tree.map(lambda x: jax.make_array_from_process_local_data(data_sh, x), obs_np)
-        act_dev = jax.tree.map(lambda x: jax.make_array_from_process_local_data(data_sh, x), act_np)
-        return _model.Observation.from_dict(obs_dev), act_dev
 
     with at.disable_typechecking():
+        dataset = _FakeNumpyDataset(model_cfg)
+        loader = _data_loader.TorchDataLoader(
+            dataset,
+            local_batch_size=args.batch_size,
+            sharding=data_sh,
+            shuffle=False,
+            num_workers=args.num_workers,
+            seed=0,
+        )
+        data_iter = iter(loader)
+
+        def to_obs_act(batch):
+            return _model.Observation.from_dict(batch), batch["actions"]
+
         rng = jax.random.key(0)
         model = model_cfg.create(rng)
         model_def = nnx.graphdef(model)
@@ -100,34 +125,28 @@ def main() -> None:
 
         jstep = jax.jit(step)
 
-        obs, act = next_batch()
+        obs, act = to_obs_act(next(data_iter))
         compiled = jstep.lower(params, rng, obs, act).compile()
 
-        # Warmup (compile).
+        # Warmup (compile + spin up prefetch workers).
         for _ in range(args.warmup):
-            obs, act = next_batch()
+            obs, act = to_obs_act(next(data_iter))
             jax.block_until_ready(jstep(params, rng, obs, act))
 
-        # PHASE A — CLEAN wall (NO profiler): the overlapped loop, timed honestly. jax.profiler.trace adds large
-        # per-op recording overhead, so timing inside it inflates wall and fakes "data-wait". We time clean here.
-        # Keep only the loss SCALAR to block on — the full grad pytree (~5GB bf16) must not accumulate.
-        def run_window():
-            losses = []
-            obs, act = next_batch()
-            for _ in range(args.iters):
-                loss, grads = jstep(params, rng, obs, act)
-                losses.append(loss)
-                del grads
-                obs, act = next_batch()  # host gen + H2D while the GPU runs the dispatched step
-            jax.block_until_ready(losses)
-
+        # PHASE A — clean wall (NO profiler): overlapped loop, pull next batch during compute, block once.
         t0 = time.perf_counter()
-        run_window()
+        losses = []
+        obs, act = to_obs_act(next(data_iter))
+        for _ in range(args.iters):
+            loss, grads = jstep(params, rng, obs, act)
+            losses.append(loss)
+            del grads  # don't accumulate per-step gradients (~5GB bf16 each)
+            obs, act = to_obs_act(next(data_iter))  # prefetched dequeue + H2D while the GPU computes
+        jax.block_until_ready(losses)
         clean_wall_us = (time.perf_counter() - t0) * 1e6
 
-        # PHASE B — TRACE a few fixed-input steps purely for the device op-category composition.
+        # PHASE B — short traced window (fixed batch) for device op-category composition only.
         trace_dir = tempfile.mkdtemp()
-        obs, act = next_batch()
         with jax.profiler.trace(trace_dir):
             for _ in range(min(8, args.iters)):
                 loss, grads = jstep(params, rng, obs, act)
@@ -135,7 +154,6 @@ def main() -> None:
                 del grads
         trace_steps = min(8, args.iters)
 
-    # Device-op composition (Phase B) + clean per-step timing (Phase A).
     scope_of = attribution._hlo_scope_map(compiled)  # noqa: SLF001
     per_inst = attribution._parse_trace_durations(trace_dir)  # noqa: SLF001
     cat = dict.fromkeys(attribution.CATEGORIES, 0.0)
@@ -147,7 +165,6 @@ def main() -> None:
     device_busy_per_step = busy_total / trace_steps
     wall_per_step = clean_wall_us / args.iters
     data_wait_per_step = max(0.0, wall_per_step - device_busy_per_step)
-    # Express category times per-step and as % of CLEAN wall.
     bd = attribution.Breakdown(
         category_us={k: v / trace_steps * args.iters for k, v in cat.items()},
         device_busy_us=device_busy_per_step * args.iters,
@@ -157,13 +174,13 @@ def main() -> None:
     pct = bd.percentages()
 
     lines = [
-        "# TRAIN_LOOP_BREAKDOWN — real loop with data pipeline (clean-wall data-wait)",
+        "# TRAIN_LOOP_BREAKDOWN — real prefetching loader (clean-wall data-wait)",
         "",
-        f"> ✅ **Overlapped train.py-style loop**, `{args.variant}` bf16 fwd+bwd, batch={args.batch_size}, "
-        f"FakeData pipeline (host numpy gen + collate + H2D, num_workers=0 equivalent), on {device.device_kind} "
-        f"({device.platform}). Wall is timed WITHOUT the profiler (Phase A) so it's not inflated by trace overhead; "
-        "op composition is from a separate short traced window (Phase B). `data-wait = wall - device_busy` is the "
-        "genuine host/input cost NOT overlapped behind compute (≈0 ⇒ the GPU is kept fed).",
+        f"> ✅ **Overlapped train.py-style loop with the REAL openpi TorchDataLoader** (num_workers="
+        f"{args.num_workers} background prefetch + collate + H2D), `{args.variant}` bf16 fwd+bwd, "
+        f"batch={args.batch_size}, FakeData (numpy gen, no disk), on {device.device_kind} ({device.platform}). "
+        "Clean wall timed WITHOUT the profiler (Phase A); op composition from a separate traced window (Phase B). "
+        "`data-wait = wall - device_busy` is input-pipeline cost a *prefetching* loader leaves un-hidden.",
         "",
         f"Window: {bd.n_steps} steps | clean wall {wall_per_step / 1e3:.3f} ms/step | "
         f"device-busy {device_busy_per_step / 1e3:.3f} ms/step | data-wait {data_wait_per_step / 1e3:.3f} ms/step "
@@ -179,9 +196,8 @@ def main() -> None:
         "",
         f"**Dominant: `{bd.dominant()}`** ({pct[bd.dominant()] * 100:.1f}% of clean wall).",
         "",
-        "Interpretation: data-wait here = FakeData host gen + collate + H2D + dispatch not overlapped by compute.",
-        "With a real LeRobot/RLDS config it also includes image decode + disk. Low data-wait ⇒ compute-bound (GEMM,",
-        "per the single-step breakdown); high data-wait ⇒ the host/input path is the measured bottleneck.",
+        "data-wait here = what the prefetching loader (collate + H2D, workers overlapped) leaves un-hidden behind",
+        "compute. Low ⇒ compute-bound (GEMM); high ⇒ the input path is the bottleneck even with prefetch.",
         "",
     ]
     with open("TRAIN_LOOP_BREAKDOWN.md", "w") as f:
