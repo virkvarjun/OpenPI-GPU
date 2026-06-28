@@ -109,15 +109,18 @@ def main() -> None:
             jax.block_until_ready(jstep(params, rng, obs, act))
 
         # Overlapped window: dispatch async, build next batch during compute, block once at the end.
+        # Keep only the loss SCALAR per step to block on — the full grad pytree (~5GB bf16) must not accumulate.
         trace_dir = tempfile.mkdtemp()
-        outs = []
+        losses = []
         t0 = time.perf_counter()
         with jax.profiler.trace(trace_dir):
             obs, act = next_batch()
             for _ in range(args.iters):
-                outs.append(jstep(params, rng, obs, act))
+                loss, _grads = jstep(params, rng, obs, act)
+                losses.append(loss)
+                del _grads  # free this step's gradients immediately (don't hold all iters' grads)
                 obs, act = next_batch()  # host gen + H2D while the GPU runs the dispatched step
-            jax.block_until_ready(outs)
+            jax.block_until_ready(losses)
         wall_us = (time.perf_counter() - t0) * 1e6
 
     # Attribute using the same HLO-scope join as the single-step instrument.
