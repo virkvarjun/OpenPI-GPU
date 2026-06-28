@@ -52,8 +52,12 @@ def _host_sample(spec):
 
 
 def _gen(spec_tree):
+    # inputs_spec has optional None fields (token_ar_mask/token_loss_mask are pi0-fast only) — omit them;
+    # Observation.from_dict treats them as absent.
+    if spec_tree is None:
+        return None
     if isinstance(spec_tree, dict):
-        return {k: _gen(v) for k, v in spec_tree.items()}
+        return {k: g for k, v in spec_tree.items() if (g := _gen(v)) is not None}
     return _host_sample(spec_tree)
 
 
