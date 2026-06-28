@@ -73,6 +73,8 @@ def main():
             nnx.state(model),
         )
         n_param_leaves = len(jax.tree.leaves(params))
+        del model  # free the original fp32 param copy (~10GB) — only model_def + bf16 params are needed
+        jax.block_until_ready(params)
 
         def step(params, rng, obs, act):
             m = nnx.merge(model_def, params)
