@@ -108,57 +108,80 @@ def main() -> None:
             obs, act = next_batch()
             jax.block_until_ready(jstep(params, rng, obs, act))
 
-        # Overlapped window: dispatch async, build next batch during compute, block once at the end.
-        # Keep only the loss SCALAR per step to block on — the full grad pytree (~5GB bf16) must not accumulate.
-        trace_dir = tempfile.mkdtemp()
-        losses = []
-        t0 = time.perf_counter()
-        with jax.profiler.trace(trace_dir):
+        # PHASE A — CLEAN wall (NO profiler): the overlapped loop, timed honestly. jax.profiler.trace adds large
+        # per-op recording overhead, so timing inside it inflates wall and fakes "data-wait". We time clean here.
+        # Keep only the loss SCALAR to block on — the full grad pytree (~5GB bf16) must not accumulate.
+        def run_window():
+            losses = []
             obs, act = next_batch()
             for _ in range(args.iters):
-                loss, _grads = jstep(params, rng, obs, act)
+                loss, grads = jstep(params, rng, obs, act)
                 losses.append(loss)
-                del _grads  # free this step's gradients immediately (don't hold all iters' grads)
+                del grads
                 obs, act = next_batch()  # host gen + H2D while the GPU runs the dispatched step
             jax.block_until_ready(losses)
-        wall_us = (time.perf_counter() - t0) * 1e6
 
-    # Attribute using the same HLO-scope join as the single-step instrument.
+        t0 = time.perf_counter()
+        run_window()
+        clean_wall_us = (time.perf_counter() - t0) * 1e6
+
+        # PHASE B — TRACE a few fixed-input steps purely for the device op-category composition.
+        trace_dir = tempfile.mkdtemp()
+        obs, act = next_batch()
+        with jax.profiler.trace(trace_dir):
+            for _ in range(min(8, args.iters)):
+                loss, grads = jstep(params, rng, obs, act)
+                jax.block_until_ready(loss)
+                del grads
+        trace_steps = min(8, args.iters)
+
+    # Device-op composition (Phase B) + clean per-step timing (Phase A).
     scope_of = attribution._hlo_scope_map(compiled)  # noqa: SLF001
     per_inst = attribution._parse_trace_durations(trace_dir)  # noqa: SLF001
     cat = dict.fromkeys(attribution.CATEGORIES, 0.0)
-    busy = 0.0
+    busy_total = 0.0
     for inst, dur in per_inst.items():
         scope = scope_of.get(inst) or scope_of.get(inst.split(".clone")[0]) or ""
         cat[attribution.classify(inst, scope)] += dur
-        busy += dur
-    bd = attribution.Breakdown(category_us=cat, device_busy_us=busy, wall_us=wall_us, n_steps=args.iters)
+        busy_total += dur
+    device_busy_per_step = busy_total / trace_steps
+    wall_per_step = clean_wall_us / args.iters
+    data_wait_per_step = max(0.0, wall_per_step - device_busy_per_step)
+    # Express category times per-step and as % of CLEAN wall.
+    bd = attribution.Breakdown(
+        category_us={k: v / trace_steps * args.iters for k, v in cat.items()},
+        device_busy_us=device_busy_per_step * args.iters,
+        wall_us=clean_wall_us,
+        n_steps=args.iters,
+    )
     pct = bd.percentages()
 
     lines = [
-        "# TRAIN_LOOP_BREAKDOWN — real loop with data loader (data-wait is trustworthy here)",
+        "# TRAIN_LOOP_BREAKDOWN — real loop with data pipeline (clean-wall data-wait)",
         "",
         f"> ✅ **Overlapped train.py-style loop**, `{args.variant}` bf16 fwd+bwd, batch={args.batch_size}, "
         f"FakeData pipeline (host numpy gen + collate + H2D, num_workers=0 equivalent), on {device.device_kind} "
-        f"({device.platform}). Async dispatch + next-batch-during-compute + single block, so `data-wait` is genuine "
-        "input-pipeline cost NOT hidden behind compute (≈0 means the pipeline keeps the GPU fed).",
+        f"({device.platform}). Wall is timed WITHOUT the profiler (Phase A) so it's not inflated by trace overhead; "
+        "op composition is from a separate short traced window (Phase B). `data-wait = wall - device_busy` is the "
+        "genuine host/input cost NOT overlapped behind compute (≈0 ⇒ the GPU is kept fed).",
         "",
-        f"Window: {bd.n_steps} steps | wall {wall_us / 1e3 / bd.n_steps:.3f} ms/step | "
-        f"device-busy {busy / 1e3 / bd.n_steps:.3f} ms/step | data-wait {bd.data_wait_us / 1e3 / bd.n_steps:.3f} ms/step",
+        f"Window: {bd.n_steps} steps | clean wall {wall_per_step / 1e3:.3f} ms/step | "
+        f"device-busy {device_busy_per_step / 1e3:.3f} ms/step | data-wait {data_wait_per_step / 1e3:.3f} ms/step "
+        f"({data_wait_per_step / wall_per_step * 100:.1f}%)",
         "",
         "| category | device ms/step | % wall |",
         "|----------|---------------:|-------:|",
     ]
     for c in (*attribution.CATEGORIES, "data-wait"):
-        ms = (cat.get(c, bd.data_wait_us if c == "data-wait" else 0.0)) / 1e3 / bd.n_steps
+        ms = (bd.category_us.get(c, bd.data_wait_us if c == "data-wait" else 0.0)) / 1e3 / bd.n_steps
         lines.append(f"| {c} | {ms:.4f} | {pct[c] * 100:.1f}% |")
     lines += [
         "",
-        f"**Dominant: `{bd.dominant()}`** ({pct[bd.dominant()] * 100:.1f}% of wall).",
+        f"**Dominant: `{bd.dominant()}`** ({pct[bd.dominant()] * 100:.1f}% of clean wall).",
         "",
-        "Interpretation: data-wait here = FakeData transform+collate+H2D not overlapped by compute. With a real",
-        "LeRobot/RLDS config this also includes image decode + disk. Low data-wait ⇒ compute-bound (GEMM, per the",
-        "single-step breakdown); high data-wait ⇒ input pipeline is the measured bottleneck → optimize it.",
+        "Interpretation: data-wait here = FakeData host gen + collate + H2D + dispatch not overlapped by compute.",
+        "With a real LeRobot/RLDS config it also includes image decode + disk. Low data-wait ⇒ compute-bound (GEMM,",
+        "per the single-step breakdown); high data-wait ⇒ the host/input path is the measured bottleneck.",
         "",
     ]
     with open("TRAIN_LOOP_BREAKDOWN.md", "w") as f:
