@@ -33,7 +33,9 @@ def _free_port() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--nproc", type=int, required=True, help="number of local processes")
-    parser.add_argument("--devices-per-proc", type=int, default=1, help="CPU devices simulated per process")
+    parser.add_argument("--devices-per-proc", type=int, default=1, help="devices per process (CPU-sim count, or GPUs per process)")
+    parser.add_argument("--backend", choices=["cpu", "gpu"], default="cpu",
+                        help="cpu = simulated CPU devices (cheap ladder); gpu = real GPUs via CUDA_VISIBLE_DEVICES")
     parser.add_argument("--coordinator-port", type=int, default=None, help="defaults to a free port")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- <command> run in each process")
     args = parser.parse_args()
@@ -51,10 +53,15 @@ def main() -> int:
         env["JAX_COORDINATOR_ADDRESS"] = f"localhost:{port}"
         env["JAX_NUM_PROCESSES"] = str(args.nproc)
         env["JAX_PROCESS_ID"] = str(i)
-        # Each process simulates its own CPU devices; the cluster's global device_count is the sum.
-        env["XLA_FLAGS"] = (
-            f"{env.get('XLA_FLAGS', '')} --xla_force_host_platform_device_count={args.devices_per_proc}".strip()
-        )
+        if args.backend == "gpu":
+            # Real multi-host: one process per GPU (or a contiguous GPU slice). Global device_count == sum.
+            lo = i * args.devices_per_proc
+            env["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in range(lo, lo + args.devices_per_proc))
+        else:
+            # Cheap ladder: each process simulates its own CPU devices; global device_count is the sum.
+            env["XLA_FLAGS"] = (
+                f"{env.get('XLA_FLAGS', '')} --xla_force_host_platform_device_count={args.devices_per_proc}".strip()
+            )
         procs.append(subprocess.Popen(command, env=env))
 
     exit_code = 0
