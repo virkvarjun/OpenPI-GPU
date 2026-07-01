@@ -46,6 +46,13 @@ class DataLoader(Protocol[T_co]):
         """Get the data config for this data loader."""
         raise NotImplementedError("Subclasses of DataLoader should implement data_config.")
 
+    def get_state(self) -> dict:
+        """G4: checkpointable iterator state (e.g. the epoch counter). Default: none."""
+        return {}
+
+    def set_state(self, state: dict, *, resume_step: int = 0) -> None:
+        """G4: restore iterator state; ``resume_step`` (== train step) sets the mid-epoch offset. Default: no-op."""
+
     def __iter__(self) -> Iterator[T_co]:
         raise NotImplementedError("Subclasses of DataLoader should implement __iter__.")
 
@@ -436,6 +443,7 @@ class TorchDataLoader:
                 jax.sharding.PartitionSpec("B"),
             )
         self._num_batches = num_batches
+        self._sampler = sampler  # kept for G4 get_state/set_state (None unless the within-batch shard sampler)
 
         mp_context = None
         if num_workers > 0:
@@ -460,6 +468,14 @@ class TorchDataLoader:
     @property
     def torch_loader(self) -> torch.utils.data.DataLoader:
         return self._data_loader
+
+    def get_state(self) -> dict:
+        return self._sampler.get_state() if self._sampler is not None and hasattr(self._sampler, "get_state") else {}
+
+    def set_state(self, state: dict, *, resume_step: int = 0) -> None:
+        # Deterministic order ⇒ the train step alone determines (epoch, offset); the sampler recomputes it.
+        if self._sampler is not None and hasattr(self._sampler, "seek"):
+            self._sampler.seek(resume_step)
 
     def __iter__(self):
         num_items = 0
@@ -504,21 +520,37 @@ class _WithinBatchShardSampler(torch.utils.data.Sampler):
         process_count: int,
         shuffle: bool,
         seed: int,
+        start_epoch: int = 0,
+        start_batch: int = 0,
     ):
-        self._indices = data_sharding.process_index_stream(
-            dataset_len,
-            global_batch_size,
-            process_index,
-            process_count,
-            shuffle=shuffle,
-            seed=seed,
-        ).tolist()
+        self._args = (dataset_len, global_batch_size, process_index, process_count)
+        self._shuffle = shuffle
+        self._seed = seed
+        self._epoch = start_epoch  # advances each epoch so the shuffle differs + is resumable (G4)
+        self._start_batch = start_batch  # mid-epoch resume offset; applied only to the first epoch after resume
+
+    def _stream(self):
+        return data_sharding.process_index_stream(
+            *self._args, shuffle=self._shuffle, seed=self._seed, epoch=self._epoch, start_batch=self._start_batch
+        )
 
     def __iter__(self):
-        return iter(self._indices)
+        indices = self._stream().tolist()
+        self._epoch += 1
+        self._start_batch = 0  # only the resumed epoch is offset; subsequent epochs are full
+        return iter(indices)
 
     def __len__(self) -> int:
-        return len(self._indices)
+        return len(self._stream())
+
+    # G4 resume: the deterministic order means the train step ALONE determines where to resume, so we recompute
+    # (epoch, offset) from it — no separate iterator blob is checkpointed.
+    def get_state(self) -> dict:
+        return {"epoch": self._epoch}  # informational
+
+    def seek(self, resume_step: int) -> None:
+        dataset_len, global_batch_size, _, _ = self._args
+        self._epoch, self._start_batch = data_sharding.resume_position(resume_step, dataset_len, global_batch_size)
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -555,6 +587,12 @@ class RLDSDataLoader:
         self._sharding = sharding
         self._num_batches = num_batches
 
+    def get_state(self) -> dict:
+        return {}  # G4: RLDS/tf.data exact resume is coarser (250k shuffle buffer) — deferred to V1.1.
+
+    def set_state(self, state: dict, *, resume_step: int = 0) -> None:
+        pass  # RLDS resumes from the start of the stream; flagged as coarse resume.
+
     def __iter__(self):
         num_items = 0
         while True:
@@ -577,6 +615,13 @@ class DataLoaderImpl(DataLoader):
 
     def data_config(self) -> _config.DataConfig:
         return self._data_config
+
+    def get_state(self) -> dict:
+        return self._data_loader.get_state() if hasattr(self._data_loader, "get_state") else {}
+
+    def set_state(self, state: dict, *, resume_step: int = 0) -> None:
+        if hasattr(self._data_loader, "set_state"):
+            self._data_loader.set_state(state, resume_step=resume_step)
 
     def __iter__(self):
         for batch in self._data_loader:

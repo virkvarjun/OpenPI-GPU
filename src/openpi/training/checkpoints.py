@@ -92,8 +92,6 @@ def restore_state(
     data_loader: _data_loader.DataLoader,
     step: int | None = None,
 ) -> training_utils.TrainState:
-    del data_loader
-
     with at.disable_typechecking():
         # Split params that can be used for inference into a separate item.
         train_state, params = _split_params(state)
@@ -104,7 +102,13 @@ def restore_state(
                 "params": {"params": params},
             },
         )
-    return _merge_params(restored["train_state"], restored["params"])
+    merged = _merge_params(restored["train_state"], restored["params"])
+
+    # G4: seek the data loader to the restored step so training resumes on exactly the right examples. The shard
+    # sampler order is a pure function of (seed, epoch), so the step counter alone determines (epoch, offset) —
+    # no separate iterator blob is checkpointed. No-op for loaders without the sampler (e.g. RLDS -> coarse resume).
+    data_loader.set_state({}, resume_step=int(merged.step))
+    return merged
 
 
 def load_norm_stats(assets_dir: epath.Path | str, asset_id: str) -> dict[str, _normalize.NormStats] | None:

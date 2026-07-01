@@ -247,7 +247,11 @@ def main(config: _config.TrainConfig):
     logging.info(f"Initialized train state:\n{training_utils.array_tree_to_info(train_state.params)}")
 
     if resuming:
+        # restore_state seeks the data loader to the restored step (G4). Re-create the iterator so it starts at
+        # that resumed position (the one made above at `iter(data_loader)` captured the pre-seek order).
         train_state = _checkpoints.restore_state(checkpoint_manager, train_state, data_loader)
+        data_iter = iter(data_loader)
+        batch = next(data_iter)
 
     ptrain_step = jax.jit(
         functools.partial(train_step, config),
