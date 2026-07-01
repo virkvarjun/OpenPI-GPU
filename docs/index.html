@@ -412,25 +412,32 @@ Adam m, v (fp32)       8 bytes/param
         split along <code>batch</code>, and the model parameters are split along <code>fsdp</code>.</p>
       <figure>
         <div class="svg-wrap anim">
-          <svg viewBox="0 0 560 220" role="img" aria-label="Eight chips assembling into a 2 by 4 device mesh">
-            <g stroke-width="1.3">
-              <rect class="f-p2 s-a" data-move style="--from:translate(-120px,-40px)" x="120" y="40" width="70" height="52" rx="6"/>
-              <rect class="f-p2 s-a" data-move style="--from:translate(60px,-70px)" x="210" y="40" width="70" height="52" rx="6"/>
-              <rect class="f-p2 s-a" data-move style="--from:translate(-40px,-90px)" x="300" y="40" width="70" height="52" rx="6"/>
-              <rect class="f-p2 s-a" data-move style="--from:translate(140px,-30px)" x="390" y="40" width="70" height="52" rx="6"/>
-              <rect class="f-p2 s-a" data-move style="--from:translate(-120px,80px)" x="120" y="110" width="70" height="52" rx="6"/>
-              <rect class="f-p2 s-a" data-move style="--from:translate(40px,110px)" x="210" y="110" width="70" height="52" rx="6"/>
-              <rect class="f-p2 s-a" data-move style="--from:translate(-30px,120px)" x="300" y="110" width="70" height="52" rx="6"/>
-              <rect class="f-p2 s-a" data-move style="--from:translate(130px,90px)" x="390" y="110" width="70" height="52" rx="6"/>
+          <svg viewBox="0 0 620 216" role="img" aria-label="A 2 by 4 device mesh: parameters sharded across columns, data across rows">
+            <!-- column headers: the parameter shard each fsdp column holds -->
+            <text class="t-a" x="315" y="22" text-anchor="middle" data-fade>fsdp axis  →  parameters sharded (W₀ … W₃)</text>
+            <g class="t-a" text-anchor="middle" data-fade style="transition-delay:.1s">
+              <text x="176" y="46">W₀</text><text x="286" y="46">W₁</text><text x="396" y="46">W₂</text><text x="506" y="46">W₃</text>
             </g>
-            <g class="t-l" text-anchor="middle" data-fade style="transition-delay:.9s">
-              <text x="290" y="72">chip</text><text x="290" y="142">chip</text>
+            <!-- row labels: the data shard each batch row holds -->
+            <text class="t-b" x="40" y="90" text-anchor="middle" transform="rotate(-90 40 118)" data-fade style="transition-delay:.1s">batch axis ↓ (data)</text>
+            <g class="t-b" text-anchor="end" data-fade style="transition-delay:.15s">
+              <text x="118" y="90">batch 0</text><text x="118" y="162">batch 1</text>
             </g>
-            <text class="t-a" x="290" y="200" text-anchor="middle" data-fade style="transition-delay:1s">fsdp axis  →  (parameters sharded)</text>
-            <text class="t-b" x="95" y="105" text-anchor="middle" transform="rotate(-90 95 105)" data-fade style="transition-delay:1s">batch axis ↑</text>
+            <!-- 2x4 chips; each holds param-shard (column colour) + data-shard (row colour) -->
+            <g stroke-width="1.2">
+              <g data-fade style="transition-delay:.2s"><rect class="panel-box" x="126" y="54" width="100" height="56" rx="7"/><rect class="f-a" x="150" y="72" width="20" height="20" opacity=".35"/><rect class="f-b" x="182" y="72" width="20" height="20" opacity=".55"/></g>
+              <g data-fade style="transition-delay:.3s"><rect class="panel-box" x="236" y="54" width="100" height="56" rx="7"/><rect class="f-a" x="260" y="72" width="20" height="20" opacity=".6"/><rect class="f-b" x="292" y="72" width="20" height="20" opacity=".55"/></g>
+              <g data-fade style="transition-delay:.4s"><rect class="panel-box" x="346" y="54" width="100" height="56" rx="7"/><rect class="f-a" x="370" y="72" width="20" height="20" opacity=".8"/><rect class="f-b" x="402" y="72" width="20" height="20" opacity=".55"/></g>
+              <g data-fade style="transition-delay:.5s"><rect class="panel-box" x="456" y="54" width="100" height="56" rx="7"/><rect class="f-a" x="480" y="72" width="20" height="20"/><rect class="f-b" x="512" y="72" width="20" height="20" opacity=".55"/></g>
+              <g data-fade style="transition-delay:.35s"><rect class="panel-box" x="126" y="126" width="100" height="56" rx="7"/><rect class="f-a" x="150" y="144" width="20" height="20" opacity=".35"/><rect class="f-b" x="182" y="144" width="20" height="20" opacity=".9"/></g>
+              <g data-fade style="transition-delay:.45s"><rect class="panel-box" x="236" y="126" width="100" height="56" rx="7"/><rect class="f-a" x="260" y="144" width="20" height="20" opacity=".6"/><rect class="f-b" x="292" y="144" width="20" height="20" opacity=".9"/></g>
+              <g data-fade style="transition-delay:.55s"><rect class="panel-box" x="346" y="126" width="100" height="56" rx="7"/><rect class="f-a" x="370" y="144" width="20" height="20" opacity=".8"/><rect class="f-b" x="402" y="144" width="20" height="20" opacity=".9"/></g>
+              <g data-fade style="transition-delay:.65s"><rect class="panel-box" x="456" y="126" width="100" height="56" rx="7"/><rect class="f-a" x="480" y="144" width="20" height="20"/><rect class="f-b" x="512" y="144" width="20" height="20" opacity=".9"/></g>
+            </g>
+            <g class="pcap" data-fade style="transition-delay:.7s"><rect class="f-a" x="150" y="198" width="12" height="12"/><text x="168" y="208">param shard</text><rect class="f-b" x="250" y="198" width="12" height="12"/><text x="268" y="208">data shard</text></g>
           </svg>
         </div>
-        <figcaption>Eight accelerators assembled into a 2×4 (batch × fsdp) mesh. Batch is split down the rows; parameters are split across the columns.</figcaption>
+        <figcaption>The 2×4 (batch × fsdp) mesh. Reading across a row, the parameter shard changes (W₀…W₃): parameters are split along the fsdp axis. Reading down a column, the data shard changes: the batch is split along the batch axis. Every chip holds one slice of each.</figcaption>
       </figure>
       <p>In code, the mesh is built once, then a tensor's layout is declared with a <code>PartitionSpec</code> that
         names which mesh axis each of its dimensions maps to. Parameters are sharded along <code>fsdp</code>; the
@@ -855,17 +862,15 @@ sampler.seek(epoch, offset)</code></pre>
       <figure>
         <div class="svg-wrap anim">
           <svg viewBox="0 0 600 210" role="img" aria-label="Attention cost as area growing quadratically with sequence length">
-            <g stroke-width="1.3">
-              <rect class="s-a f-p2" x="40" y="150" width="40" height="40" rx="2" data-fade/>
-              <text class="t-l" x="60" y="205" text-anchor="middle" data-fade>866</text>
-              <text class="t-a" x="60" y="144" text-anchor="middle" data-fade>4.7%</text>
-              <rect class="s-a f-p2" x="150" y="94" width="96" height="96" rx="2" data-fade style="transition-delay:.35s"/>
-              <text class="t-l" x="198" y="205" text-anchor="middle" data-fade style="transition-delay:.35s">2048</text>
-              <text class="t-a" x="198" y="88" text-anchor="middle" data-fade style="transition-delay:.35s">22%</text>
-              <rect class="s-a f-a" x="320" y="18" width="172" height="172" rx="2" opacity=".18" data-fade style="transition-delay:.7s"/>
-              <rect class="s-a" fill="none" x="320" y="18" width="172" height="172" rx="2" data-fade style="transition-delay:.7s"/>
-              <text class="t-l" x="406" y="205" text-anchor="middle" data-fade style="transition-delay:.7s">4096 tokens</text>
-              <text class="t-a" x="406" y="12" text-anchor="middle" data-fade style="transition-delay:.7s">86%</text>
+            <g stroke="var(--accent)" stroke-width="1.4" fill="var(--accent)" fill-opacity=".16">
+              <rect x="40" y="150" width="40" height="40" rx="2" data-fade/>
+              <rect x="150" y="94" width="96" height="96" rx="2" data-fade style="transition-delay:.35s"/>
+              <rect x="320" y="18" width="172" height="172" rx="2" data-fade style="transition-delay:.7s"/>
+            </g>
+            <g text-anchor="middle">
+              <text class="t-l" x="60" y="205" data-fade>866</text><text class="t-a" x="60" y="144" data-fade>4.7%</text>
+              <text class="t-l" x="198" y="205" data-fade style="transition-delay:.35s">2048</text><text class="t-a" x="198" y="88" data-fade style="transition-delay:.35s">22%</text>
+              <text class="t-l" x="406" y="205" data-fade style="transition-delay:.7s">4096 tokens</text><text class="t-a" x="406" y="12" data-fade style="transition-delay:.7s">86%</text>
             </g>
           </svg>
         </div>
