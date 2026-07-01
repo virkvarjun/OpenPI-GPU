@@ -62,3 +62,47 @@ def test_single_process_is_plain_order():
 def test_rejects_indivisible_batch():
     with pytest.raises(ValueError):
         data_sharding.process_index_stream(100, 30, 0, 4, shuffle=False, seed=0)
+
+
+# --- G4: epoch-aware seeding + exact resume ---
+
+
+def test_epoch_seed_zero_is_identity_and_reshuffles():
+    assert data_sharding.epoch_seed(42, 0) == 42  # epoch 0 == seed (backward compatible)
+    o0 = data_sharding.global_order(100, shuffle=True, seed=42, epoch=0)
+    o1 = data_sharding.global_order(100, shuffle=True, seed=42, epoch=1)
+    assert not np.array_equal(o0, o1)  # different epochs give a different shuffle
+    assert np.array_equal(o1, data_sharding.global_order(100, shuffle=True, seed=42, epoch=1))  # reproducible
+
+
+def test_resume_position_maps_step_to_epoch_offset():
+    # 100 examples / batch 10 -> 10 batches/epoch. 23 consumed -> epoch 2, offset 3.
+    assert data_sharding.resume_position(23, 100, 10) == (2, 3)
+    assert data_sharding.resume_position(0, 100, 10) == (0, 0)
+    assert data_sharding.resume_position(10, 100, 10) == (1, 0)  # exact epoch boundary
+
+
+def test_start_batch_skips_leading_batches():
+    n, b, pc, pi = 100, 10, 2, 0
+    local = b // pc
+    full = data_sharding.process_index_stream(n, b, pi, pc, shuffle=True, seed=0, epoch=2)
+    resumed = data_sharding.process_index_stream(n, b, pi, pc, shuffle=True, seed=0, epoch=2, start_batch=3)
+    assert np.array_equal(resumed, full[3 * local :])  # skipped exactly 3 batches
+
+
+def test_resume_continuity_no_repeat_or_skip_across_epoch_boundary():
+    """Resuming from the checkpointed step count continues the stream exactly (no repeated/skipped examples)."""
+    n, b, pc, pi = 60, 12, 3, 1
+    local = b // pc
+    uninterrupted = np.concatenate(
+        [
+            data_sharding.process_index_stream(n, b, pi, pc, shuffle=True, seed=7, epoch=0),
+            data_sharding.process_index_stream(n, b, pi, pc, shuffle=True, seed=7, epoch=1),
+        ]
+    )
+    consumed_batches = 7  # crashed after 7 global steps
+    e, off = data_sharding.resume_position(consumed_batches, n, b)
+    assert (e, off) == (1, 2)
+    resumed = data_sharding.process_index_stream(n, b, pi, pc, shuffle=True, seed=7, epoch=e, start_batch=off)
+    # the resumed stream == exactly the tail of the uninterrupted run after `consumed_batches` batches
+    assert np.array_equal(resumed, uninterrupted[consumed_batches * local :])
