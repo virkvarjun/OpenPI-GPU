@@ -440,6 +440,15 @@ def step(params, batch):
         </div>
         <figcaption>Eight accelerators assembled into a 2×4 (batch × fsdp) mesh. Batch is split down the rows; parameters are split across the columns.</figcaption>
       </figure>
+      <p>In code, the mesh is built once, then a tensor's layout is declared with a <code>PartitionSpec</code> that
+        names which mesh axis each of its dimensions maps to. Parameters are sharded along <code>fsdp</code>; the
+        data batch is split along the data axis.</p>
+      <pre><code class="language-python">from jax.sharding import NamedSharding, PartitionSpec as P
+
+mesh = sharding.make_mesh(num_fsdp_devices=n_gpus)      # 2D: (batch, fsdp)
+
+state_sharding = sharding.fsdp_sharding(params, mesh)   # one PartitionSpec per param leaf
+data_sharding  = NamedSharding(mesh, P(("batch", "fsdp")))  # shard batch dim 0, any rank</code></pre>
 
       <h3 id="ch3-fsdp">FSDP: shard, gather, compute, free, scatter</h3>
       <p>Fully-sharded data parallelism keeps each parameter matrix split across the <code>fsdp</code> devices, so
@@ -468,10 +477,27 @@ def step(params, batch):
             <text class="t-b" x="300" y="192" text-anchor="middle" data-fade style="transition-delay:.9s">matmul</text>
             <path class="s-a" data-draw style="--len:26" stroke-width="1.2" d="M300 150 V172"/>
             <text class="t-l" x="392" y="164" data-fade style="transition-delay:1.1s">grads reduce-scatter ↑</text>
+            <g class="t-l" text-anchor="middle" data-fade style="transition-delay:1.35s"><text x="300" y="224">① all-gather   →   ② matmul   →   ③ free full weight   →   ④ reduce-scatter</text></g>
           </svg>
         </div>
         <figcaption>One layer of FSDP: shards all-gather into the full weight, the matmul runs, the full weight is freed, and gradients reduce-scatter back. Whether the gather hides behind the matmul sets the scaling efficiency.</figcaption>
       </figure>
+      <p>The elegant part is that none of this is written by hand. The parameters are placed on their shards, the
+        inputs on the data sharding, and <code>jax.jit</code> infers the whole sharded computation from the
+        committed input layouts. XLA is what emits the all-gather before each matmul and the reduce-scatter after
+        the backward pass.</p>
+      <pre><code class="language-python"># place state on its shards; jit reads the layouts off the placed inputs
+params   = jax.device_put(params, state_sharding)
+obs, act = jax.device_put((obs, act), data_sharding)
+
+step = jax.jit(train_step)     # no manual collectives: XLA emits gather / reduce-scatter
+loss, grads = step(params, obs, act)</code></pre>
+      <div class="callout warning">
+        <span class="label">Where the efficiency goes</span>
+        <p>At a fixed small batch, four GPUs means one sample per GPU, so the all-gather cannot hide behind a tiny
+          matmul and dominates: strong scaling reaches only 1.44× at 12.5% MFU. Growing the batch with the device
+          count (weak scaling) keeps each matmul large enough to cover the gather, and recovers 2.85×.</p>
+      </div>
 
       <h3 id="ch3-shard">Data sharding, and why it must be exact</h3>
       <p>When several processes train together, each reads a different slice of the data. The naive way, hand each
@@ -506,6 +532,16 @@ def step(params, batch):
         </div>
         <figcaption>Within-batch sharding reconstructs the single-process batch exactly, giving bit-identical training; naive striping reorders it, and parity is lost.</figcaption>
       </figure>
+      <p>The sampler is the whole trick. Each process takes a contiguous slice <em>within</em> every global batch
+        of one shared, deterministic order, so the slices reassemble the exact single-process batch.</p>
+      <pre><code class="language-python"># process pi of pc: a contiguous slice inside each global batch of the shared order.
+# concatenating slice(P0) .. slice(Pn) rebuilds the single-process global batch exactly.
+def process_index_stream(order, global_batch, pi, pc):
+    local = global_batch // pc
+    return np.concatenate([
+        order[s*global_batch + pi*local : s*global_batch + (pi + 1)*local]
+        for s in range(len(order) // global_batch)
+    ])</code></pre>
       <div class="callout tip">
         <span class="label">Key idea</span>
         <p>Sharding within each global batch is what buys bit-precise parity between the multi-process and
@@ -518,6 +554,17 @@ def step(params, batch):
         <em>square</em> of the sequence length. FlashAttention computes the same result by streaming the matrix in
         tiles and never storing it whole, which makes it faster and, more importantly, keeps its memory flat as
         the sequence grows. Part VI shows how decisive that becomes at longer context.</p>
+      <p>Wiring it into Gemma is a drop-in replacement for the einsum-softmax-einsum, with three details that have
+        to be right: the query is already scaled by <code>head_dim**-0.5</code> so the kernel scale is 1.0, the
+        block-causal mask is passed through, and the grouped-query layout (eight query heads, one key/value head)
+        is handled by the kernel.</p>
+      <pre><code class="language-python"># fused path in gemma attention (behind use_flash_attention, default on)
+encoded = jax.nn.dot_product_attention(
+    q, k, v,                       # q pre-scaled; k, v are the single GQA kv head
+    mask=attn_mask,                # block-causal prefix + causal suffix
+    scale=1.0,                     # scaling already applied to q
+    implementation="xla",          # cuDNN rejects head_dim 256; xla is the usable fused path
+)   # bit-identical loss to the naive path, verified in pi0_flash_test.py</code></pre>
 
       <div class="drills">
         <h4>Drills</h4>
