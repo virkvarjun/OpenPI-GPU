@@ -14,7 +14,7 @@ import openpi.shared.array_typing as at
 from openpi.models import pi0_config
 
 
-def _loss(use_flash: bool) -> np.ndarray:
+def _model_and_inputs(use_flash: bool):
     cfg = pi0_config.Pi0Config(
         paligemma_variant="dummy",
         action_expert_variant="dummy",
@@ -35,13 +35,23 @@ def _loss(use_flash: bool) -> np.ndarray:
             return jnp.ones(s.shape, bool)
         return jnp.zeros(s.shape, s.dtype)
 
-    obs = jax.tree.map(rand, obs_spec)
-    act = jax.tree.map(rand, act_spec)
-    return np.asarray(model.compute_loss(rng, obs, act, train=True))
+    return model, rng, jax.tree.map(rand, obs_spec), jax.tree.map(rand, act_spec)
 
 
-def test_flash_attention_matches_naive():
+def test_flash_matches_naive_training():
     with at.disable_typechecking():
-        naive = _loss(use_flash=False)
-        flash = _loss(use_flash=True)
-    assert np.max(np.abs(naive - flash)) < 2e-2, f"flash != naive: maxdiff {np.max(np.abs(naive - flash))}"
+        m0, rng, obs, act = _model_and_inputs(False)
+        m1, *_ = _model_and_inputs(True)
+        naive = np.asarray(m0.compute_loss(rng, obs, act, train=True))
+        flash = np.asarray(m1.compute_loss(rng, obs, act, train=True))
+    assert np.max(np.abs(naive - flash)) < 2e-2, f"training: flash != naive: {np.max(np.abs(naive - flash))}"
+
+
+def test_flash_matches_naive_inference():
+    # Inference uses the KV-cache (different mask shape) — verify flash matches there too.
+    with at.disable_typechecking():
+        m0, rng, obs, _ = _model_and_inputs(False)
+        m1, *_ = _model_and_inputs(True)
+        naive = np.asarray(m0.sample_actions(rng, obs, num_steps=4))
+        flash = np.asarray(m1.sample_actions(rng, obs, num_steps=4))
+    assert np.max(np.abs(naive - flash)) < 5e-2, f"inference: flash != naive: {np.max(np.abs(naive - flash))}"
