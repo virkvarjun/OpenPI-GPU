@@ -9,15 +9,19 @@ How it works (cheap-ladder friendly, no TensorFlow/xplane parsing):
      `metadata op_name`, which carries the full `jax.named_scope` / nnx-module path (e.g.
      ".../attention/exp", ".../mlp/dot_general"). This is how scope survives onto CPU where the Perfetto trace
      itself only records bare instruction names.
-  2. We run `jax.profiler.trace` over a window of real steps and parse the emitted Chrome trace
-     (`*.trace.json.gz`): each device-op event carries `args.hlo_op` (the instruction name) and a duration.
-  3. Join: instruction -> scope/op-type -> category; sum device time per category. data-wait = the fraction of
-     wall time the device was idle (wall_window - device_busy).
+  2. **Absolute** device time = the median blocked `run_step()` wall (no profiler). See ⚠️ below.
+  3. **Relative** composition = a short `jax.profiler` trace, parsed from the Chrome trace (`args.hlo_op` +
+     duration), joined instruction -> scope -> category, then SCALED to the absolute device time from (2).
 
-Limitations (flagged): on CPU, attention/FFN GEMMs are both `dot` ops; we separate *softmax* (the actual
-attention headroom per the audit) into `attention` and keep all matmuls in `matmul-FFN`, which matches the V2
-decision gate ("don't touch saturated GEMMs; fuse attention softmax"). Optimizer isolation relies on the
-optimizer ops being scoped; unscoped elementwise lands in `other`.
+⚠️ **Why (2) and not summed trace durations** (corrected 2026-06): summing the Chrome-trace op `dur` fields
+UNDER-COUNTS true device time (async/fusion/gaps) — it read ~11 ms for a gemma_2b step that actually takes
+~131 ms, which manufactured a fake 91% "data-wait" (see DISPATCH_PROFILE.md). The blocked step time is the
+reliable device measure; the trace is used only for the between-category proportions (assumed ~uniform
+under-count). For a fixed on-device input, wall == device time, so data-wait ≈ 0 (correctly).
+
+Limitations (flagged): attention/FFN GEMMs are both `dot` ops; we separate *softmax* (the audited attention
+headroom) into `attention` and keep matmuls in `matmul-FFN`. Optimizer isolation relies on the optimizer ops
+being scoped; unscoped elementwise lands in `other`. The composition proportions remain best-effort.
 """
 
 from __future__ import annotations
@@ -27,6 +31,8 @@ import glob
 import gzip
 import json
 import re
+import statistics
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -150,28 +156,45 @@ def attribute_step(
     warmup: int = 3,
     iters: int = 20,
 ) -> Breakdown:
-    """Trace a window of `run_step`, attribute device time to categories using the compiled HLO scopes."""
-    import time
+    """Attribute the REAL per-step device time to categories.
 
+    Two phases, because summing Chrome-trace op ``dur`` fields UNDER-COUNTS true device time (async / fusion /
+    gaps — it read ~11 ms for a step that actually takes ~131 ms; see DISPATCH_PROFILE.md):
+      A. **Absolute** device step time = the median ``block_until_ready(run_step())`` wall, measured WITHOUT the
+         profiler (dispatch is ~cheap, so this ≈ device time for a fixed on-device input).
+      B. **Relative** op composition from a short ``jax.profiler`` trace — used only for the *proportions*
+         between categories, which are then scaled to the real device time from (A).
+
+    Returns per-step values (``n_steps=1``). NOTE: the composition proportions are best-effort (they assume the
+    trace under-counts roughly uniformly across categories); the absolute device time is reliable.
+    """
     scope_of = _hlo_scope_map(compiled)
 
     for _ in range(max(0, warmup)):
         jax.block_until_ready(run_step())
 
-    t0 = time.perf_counter()
-    with jax.profiler.trace(trace_dir):
-        for _ in range(iters):
-            jax.block_until_ready(run_step())
-    wall_us = (time.perf_counter() - t0) * 1e6
+    # (A) real device step time — blocked, no profiler.
+    samples = []
+    for _ in range(iters):
+        t0 = time.perf_counter()
+        jax.block_until_ready(run_step())
+        samples.append((time.perf_counter() - t0) * 1e6)
+    device_step_us = statistics.median(samples)
 
+    # (B) short trace for the relative op-category composition only.
+    with jax.profiler.trace(trace_dir):
+        for _ in range(min(8, iters)):
+            jax.block_until_ready(run_step())
     per_inst = _parse_trace_durations(trace_dir)
 
-    category_us = dict.fromkeys(CATEGORIES, 0.0)
-    device_busy_us = 0.0
+    trace_cat = dict.fromkeys(CATEGORIES, 0.0)
+    trace_total = 0.0
     for inst, dur in per_inst.items():
-        # Trace instruction names may have a ".clone"/suffix; strip to match HLO map best-effort.
         scope = scope_of.get(inst) or scope_of.get(inst.split(".clone")[0]) or ""
-        category_us[classify(inst, scope)] += dur
-        device_busy_us += dur
+        trace_cat[classify(inst, scope)] += dur
+        trace_total += dur
 
-    return Breakdown(category_us=category_us, device_busy_us=device_busy_us, wall_us=wall_us, n_steps=iters)
+    # Scale the composition to the REAL device time; per-step values (n_steps=1). Fixed on-device input ⇒ no
+    # data pipeline ⇒ wall == device time ⇒ data-wait ≈ 0 (correctly, unlike the old summed-trace estimate).
+    category_us = {k: (v / trace_total * device_step_us if trace_total else 0.0) for k, v in trace_cat.items()}
+    return Breakdown(category_us=category_us, device_busy_us=device_step_us, wall_us=device_step_us, n_steps=1)

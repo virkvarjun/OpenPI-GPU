@@ -15,6 +15,7 @@ are what's delivered here.
 from __future__ import annotations
 
 import argparse
+import os
 import tempfile
 
 import flax.nnx as nnx
@@ -24,7 +25,7 @@ import optax
 
 import openpi.shared.array_typing as at
 from openpi.models import pi0_config
-from openpi.training import attribution
+from openpi.training import attribution, profiling
 
 
 def _fake_inputs(cfg, rng, batch_size=1):
@@ -124,21 +125,28 @@ def main() -> None:
         run_step, compiled = build_step(variant=args.variant, batch_size=args.batch_size, optimizer=args.optimizer)
         trace_dir = tempfile.mkdtemp()
         bd = attribution.attribute_step(run_step, compiled, trace_dir=trace_dir, warmup=args.warmup, iters=args.iters)
+        cost = profiling.step_cost(compiled)
     pct = bd.percentages()
+
+    # MFU from XLA-reported FLOPs / the REAL (blocked) device step time.
+    dev_s = bd.device_busy_us / 1e6 / bd.n_steps
+    achieved_tflops = (cost.flops / dev_s / 1e12) if dev_s > 0 else 0.0
+    peak = float(os.environ["SHARDER_PEAK_FLOPS"]) if os.environ.get("SHARDER_PEAK_FLOPS") else None
+    mfu = f"{achieved_tflops * 1e12 / peak * 100:.1f}%" if peak else "n/a (set SHARDER_PEAK_FLOPS)"
 
     lines = [
         "# STEP_BREAKDOWN — openpi pi0 training step (attribution)",
         "",
         "Real `openpi.models.pi0` step (gemma naive-softmax attention + FFN + action expert + flow-matching",
-        "loss), attributed by HLO named-scope + op type.",
+        "loss). Device time = median BLOCKED step (reliable); category split = trace composition scaled to it.",
         "",
         flag,
         "",
-        f"Window: {bd.n_steps} steps | wall {bd.wall_us / 1e3 / bd.n_steps:.3f} ms/step | "
-        f"device-busy {bd.device_busy_us / 1e3 / bd.n_steps:.3f} ms/step",
+        f"Window: {bd.n_steps} step(s) | device time {bd.device_busy_us / 1e3 / bd.n_steps:.3f} ms/step "
+        f"| {achieved_tflops:.1f} TFLOP/s achieved | MFU {mfu}",
         "",
-        "| category | device ms/step | % wall |",
-        "|----------|---------------:|-------:|",
+        "| category | device ms/step | % device |",
+        "|----------|---------------:|---------:|",
     ]
     order = [*attribution.CATEGORIES, "data-wait"]
     for c in order:
@@ -148,7 +156,9 @@ def main() -> None:
     dominant = bd.dominant()
     lines += [
         "",
-        f"**Dominant (this run): `{dominant}`** ({pct[dominant] * 100:.1f}% of wall).",
+        f"**Dominant (this run): `{dominant}`** ({pct[dominant] * 100:.1f}% of device time). "
+        "data-wait ≈ 0 (fixed on-device input) — device time is now the real blocked step, not the old "
+        "trace-sum under-count.",
         "",
         "## Decision gate (apply to PRODUCTION proportions, not these CPU/dummy ones)",
         "- **data-wait dominates** → input pipeline: image decode, prefetch depth, H2D overlap.",
