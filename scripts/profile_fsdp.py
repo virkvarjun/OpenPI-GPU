@@ -56,7 +56,9 @@ def main():
         )
         # Full FSDP: shard params over all visible GPUs. make_mesh(num_fsdp_devices=n) -> (1, n).
         mesh = sharding.make_mesh(num_fsdp_devices=n_gpus)
-        data_sh = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS, None))
+        # Shard the LEADING (batch) dim over the data axis — a single-element spec works for any-rank leaf
+        # (images [B,H,W,C], masks [B]); a 2-elem spec would fail on the rank-1 image_masks. Matches train.py.
+        data_sh = jax.sharding.NamedSharding(mesh, jax.sharding.PartitionSpec(sharding.DATA_AXIS))
 
         rng = jax.random.key(0)
         model = cfg.create(rng)
