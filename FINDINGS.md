@@ -23,10 +23,32 @@ throughput depends on).
 
 **Reading:** FSDP works (device time drops with more GPUs) but scales **poorly at this batch**. At global batch 4,
 4-GPU FSDP = **1 sample/GPU**, so the per-layer **all-gather of sharded params** dominates (comms-bound) —
-per-GPU MFU collapses 35% → 12.5%. This is the expected FSDP regime: it shards *memory* well but needs enough
-per-GPU compute to hide the all-gather. **Lever: weak scaling** — grow the global batch with GPU count so each
-GPU keeps ~batch-4 of compute; aggregate throughput should then scale much closer to linear at ~35% MFU.
-(Weak-scaling sweep is the natural next measurement.)
+per-GPU MFU collapses 35% → 12.5%. FSDP shards *memory* well but needs enough per-GPU compute to hide the
+all-gather.
+
+## FSDP weak scaling (global batch = 4 × N, i.e. 4 samples/GPU constant)
+
+| GPUs | global batch | device ms/step | aggregate TFLOP/s | per-GPU MFU |
+|-----:|-------------:|---------------:|------------------:|------------:|
+| 1 | 4 | 195.5 | 344 | 34.8% |
+| 2 | 8 | 249.9 | 539 | 27.2% |
+| 4 | 16 | 274.6 | **980** | 24.8% |
+
+**Reading:** with per-GPU compute held constant, **aggregate throughput scales 2.85× on 4 GPUs** (344→980
+TFLOP/s) at **24.8% MFU** — far better than strong scaling (1.44× / 12.5%). The residual loss: device time grows
+195→275 ms (should stay flat) ⇒ ~71% of ideal weak scaling. That growth is the **FSDP all-gather not fully
+overlapping compute** — the classic comms/compute-overlap opportunity (XLA latency-hiding scheduler, collective
+placement/tuning).
+
+### Strong vs weak (4 GPUs)
+| | speedup / aggregate | 4-GPU per-GPU MFU |
+|---|---|---|
+| strong (fixed batch 4) | 1.44× (497 TFLOP/s) | 12.5% |
+| weak (batch 16 = 4/GPU) | 2.85× (980 TFLOP/s) | 24.8% |
+
+**Conclusion:** the model step is single-GPU compute-bound (no kernel headroom); throughput scaling comes from
+FSDP, which needs **enough per-GPU batch** (weak scaling) to be efficient, and whose remaining ~30% overhead is
+**all-gather comms** → the next real optimization is **comms/compute overlap**, not anything in the model step.
 
 ## Multi-host device model (see MULTIHOST_VALIDATION.md)
 
