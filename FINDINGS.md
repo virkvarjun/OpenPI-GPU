@@ -22,10 +22,39 @@ The step-breakdown showed attention ≈ 0%, which is a **trace artifact**: on GP
 | naive (gemma.py einsum+softmax+einsum) | 0.549 | 9.89 | **4.7%** |
 | flash (`dot_product_attention`, xla) | 0.277 | 4.98 | 2.4% |
 
-⇒ **Attention is ~4.7% of the step, not 0%.** Fused attention would save only ~2.3% of the step — below the
-~15–20% gate, so it is **not worth it** (attention is small because the FFN `mlp_dim=16384` GEMMs dominate at
-this modest sequence length). The V2 conclusion — **compute/GEMM-bound, no worthwhile single-GPU kernel
-headroom** — stands, now on a real measurement rather than a bogus 0%.
+## FlashAttention — implemented, and it's a real win (bigger than the ablation predicted)
+
+Wired `jax.nn.dot_product_attention` into gemma behind `Pi0Config.use_flash_attention` (parity: bit-identical
+loss vs naive, maxdiff **0.0**; `pi0_flash_test.py`). End-to-end gemma_2b fwd+bwd, batch 4, H100:
+
+| attention | device ms/step | MFU |
+|---|---:|---:|
+| naive | 195.85 | 34.7% |
+| **flash** | **177.61** | **38.3%** |
+
+**9.3% faster (18 ms/step)** at pi0's current sequence — *larger* than the forward-only ablation (~2.3%) because
+the **backward pass benefits most**: naive stores and backprops through the full T×S attention matrix, while
+flash recomputes it in the fused kernel. Plus the memory win (no T×S matrix), which enables bigger batches /
+longer context.
+
+### Where it matters more (attention grows ~seq²; `profile_attention.py` ablation)
+| seq | naive attn % of step | flash-xla | naive attn-matrix mem |
+|----:|---------------------:|----------:|----------------------:|
+| 866 (pi0 today) | 4.7% | 2.4% | 0.14 GB/layer |
+| 2048 | 22% | 8.3% | 0.81 GB/layer |
+| 4096 | 86% | 30% | 3.22 GB/layer |
+
+⇒ At long context (more cameras/frames), flash goes from "nice" to **essential** (memory + up to ~56% step time).
+
+### Honest caveats
+- **cuDNN flash is unavailable for gemma_2b**: `head dim must be ≤ 128, got 256` (confirmed — head_dim=128 runs
+  cuDNN fine at 1.5% of step). So `flash-xla` is the usable fused path here; a Pallas/splash kernel (or head_dim
+  ≤128) would be needed for the cuDNN flash kernel.
+- **PagedAttention does NOT apply**: it's an inference-serving KV-cache memory manager (autoregressive decode).
+  The training step has no KV cache. It would only matter for pi0-FAST *serving*.
+
+**Verdict:** enable `use_flash_attention=True` — free 9.3% + memory now, and the key unlock for longer context.
+The compute is still GEMM-dominated (matmul-FFN ~58%), so scale-out (FSDP) remains the main throughput lever.
 
 ## FSDP strong scaling (fixed global batch 4, fwd+bwd, `sharding.fsdp_sharding` across N GPUs)
 
