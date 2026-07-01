@@ -99,9 +99,7 @@ figure{margin:34px 0; text-align:center; counter-increment:figc;}
 figure img,figure svg{max-width:100%; height:auto; display:block; margin:0 auto;}
 figcaption{font-family:"Source Serif 4",Georgia,serif; font-size:13.5px; color:var(--ink-soft); margin-top:14px; text-align:center; line-height:1.5;}
 figcaption::before{content:"Figure " counter(figc) ". "; font-family:"Inter",sans-serif; font-weight:600; color:var(--ink);}
-.svg-wrap{background:var(--paper); border:1px solid var(--rule); border-radius:6px; padding:24px 20px;
-  background-image:linear-gradient(var(--rule) 1px,transparent 1px),linear-gradient(90deg,var(--rule) 1px,transparent 1px);
-  background-size:22px 22px; background-position:center; opacity:1;}
+.svg-wrap{background:var(--paper-2); border:1px solid var(--rule); border-radius:6px; padding:24px 20px;}
 .svg-wrap svg{background:transparent;}
 figure img{border:1px solid var(--rule); border-radius:6px; background:var(--paper);}
 text{font-family:"JetBrains Mono",monospace;}
@@ -192,12 +190,12 @@ details .ans{margin:12px 0 2px 22px; font-size:16.5px; color:var(--ink-soft);}
     <nav class="toc" id="toc">
       <ol>
         <li class="chap" data-chap="intro"><a href="#intro"><span class="num">·</span><span>Overview</span></a></li>
-        <li class="chap" data-chap="ch1"><a href="#ch1"><span class="num">I</span><span>The hardware</span></a>
+        <li class="chap" data-chap="ch1"><a href="#ch1"><span class="num">I</span><span>What sets the ceiling</span></a>
           <ol class="subs">
-            <li><a href="#ch1-model">The accelerator model</a></li>
-            <li><a href="#ch1-mem">Memory hierarchy</a></li>
-            <li><a href="#ch1-bound">Compute vs memory bound</a></li>
-            <li><a href="#ch1-net">Interconnect</a></li>
+            <li><a href="#ch1-mfu">MFU, the number we optimize</a></li>
+            <li><a href="#ch1-bound">Compute-bound</a></li>
+            <li><a href="#ch1-mem">The memory budget</a></li>
+            <li><a href="#ch1-net">Collectives</a></li>
           </ol>
         </li>
         <li class="chap" data-chap="ch2"><a href="#ch2"><span class="num">II</span><span>The libraries</span></a>
@@ -283,107 +281,67 @@ details .ans{margin:12px 0 2px 22px; font-size:16.5px; color:var(--ink-soft);}
 
     <section class="chapter" id="ch1">
       <span class="chap-num">Part I</span>
-      <h2>The hardware</h2>
-      <p>Training a large model is a story about moving numbers. Before any of the parallelism makes sense, it
-        helps to know what an accelerator can and cannot do quickly. Two facts drive everything that follows: an
-        accelerator has enormous arithmetic throughput, and that throughput is usually starved by how fast data
-        can reach it.</p>
+      <h2>What sets the ceiling</h2>
+      <p>Assume the transformer background. Three quantities decide everything in this project: how we score a
+        step (<strong>MFU</strong>), whether the step has any single-device headroom left (it is
+        <strong>compute-bound</strong>), and why we are forced to shard and communicate at all (the
+        <strong>memory budget</strong> and the cost of <strong>collectives</strong>).</p>
 
-      <h3 id="ch1-model">The accelerator model</h3>
-      <p>A GPU is a chip built for doing the same simple operation to thousands of numbers at once. Where a CPU
-        has a handful of powerful cores optimized for branchy, sequential code, a GPU has thousands of small
-        arithmetic units that run in lockstep. Modern accelerators add dedicated matrix-multiply units, NVIDIA's
-        <em>Tensor Cores</em> and Google's <em>MXU</em> on TPUs, which multiply small matrix tiles in a single
-        instruction. Almost all of a transformer's cost is matrix multiplication, so these units are where the
-        useful work happens.</p>
-      <p>The practical consequence: an accelerator is fast only when you hand it large, regular, matrix-shaped
-        work. Small or irregular operations leave the matrix units idle.</p>
-
-      <h3 id="ch1-mem">The memory hierarchy</h3>
-      <p>Every accelerator has a pyramid of memory. It is small and blindingly fast at the top, large and slow at
-        the bottom, and every level down is roughly an order of magnitude bigger and slower.</p>
-
-      <figure>
-        <div class="svg-wrap anim">
-          <svg viewBox="0 0 640 260" role="img" aria-label="Memory hierarchy from fast on-chip SRAM down to storage">
-            <g class="s-r" stroke-width="1"></g>
-            <!-- four tiers, widths grow downward (size), fade in staggered -->
-            <g data-fade style="transition-delay:.05s">
-              <rect class="f-p2 s-a" x="230" y="26" width="180" height="34" rx="4" stroke-width="1.4"/>
-              <text class="t-a" x="320" y="47" text-anchor="middle">on-chip SRAM</text>
-              <text class="t-l" x="430" y="47">fastest · KBs–MBs</text>
-            </g>
-            <g data-fade style="transition-delay:.2s">
-              <rect class="f-p2 s-a" x="180" y="76" width="280" height="34" rx="4" stroke-width="1.2"/>
-              <text class="t-a" x="320" y="97" text-anchor="middle">HBM (device memory)</text>
-              <text class="t-l" x="480" y="97">fast · tens of GB</text>
-            </g>
-            <g data-fade style="transition-delay:.35s">
-              <rect class="f-p2 s-r" x="120" y="126" width="400" height="34" rx="4" stroke-width="1.2"/>
-              <text class="t-l" x="320" y="147" text-anchor="middle">host RAM (CPU)</text>
-              <text class="t-l" x="530" y="147">slower · 100s of GB</text>
-            </g>
-            <g data-fade style="transition-delay:.5s">
-              <rect class="f-p2 s-r" x="60" y="176" width="520" height="34" rx="4" stroke-width="1.2"/>
-              <text class="t-l" x="320" y="197" text-anchor="middle">storage / network</text>
-              <text class="t-l" x="595" y="197" text-anchor="end">slowest · TBs+</text>
-            </g>
-            <path class="s-b" data-draw style="--len:180" stroke-width="1.4" marker-end="url(#ar)" d="M30 34 V210"/>
-            <defs><marker id="ar" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="f-b" d="M0 0 L6 3 L0 6 Z"/></marker></defs>
-            <text class="t-b" x="18" y="120" transform="rotate(-90 18 120)" text-anchor="middle">larger, slower →</text>
-          </svg>
-        </div>
-        <figcaption>The memory pyramid. Keeping the matrix units fed means keeping working data as high up as possible.</figcaption>
-      </figure>
-
-      <p>Model weights live in <strong>HBM</strong> (high-bandwidth memory) on the device. Intermediate results a
-        kernel is actively working on live in <strong>on-chip SRAM</strong>. When a model or its optimizer state
-        does not fit in HBM, you either shard it across devices or spill to slower memory, and spilling is
-        expensive. This single tension, "does it fit in HBM, and can you feed the compute units fast enough,"
-        motivates both FlashAttention and FSDP later on.</p>
-
-      <h3 id="ch1-bound">Compute-bound versus memory-bound</h3>
-      <p>A kernel is <strong>compute-bound</strong> if it spends its time doing arithmetic, and
-        <strong>memory-bound</strong> if it spends its time waiting for data to arrive. The deciding quantity is
-        <em>arithmetic intensity</em>: the number of floating-point operations performed per byte read from
-        memory.</p>
-      <p>The <em>roofline</em> model makes this precise. Achievable performance is the smaller of the chip's peak
-        rate and what memory bandwidth can sustain at a given intensity:</p>
-      <p>$$ \text{Perf} \;=\; \min\!\bigl(\; \pi_{\text{peak}},\;\; I \times \beta \;\bigr) $$</p>
-      <p>where \(\pi_{\text{peak}}\) is the peak compute rate, \(\beta\) is memory bandwidth, and \(I\) is
-        arithmetic intensity in FLOPs per byte. Large matrix multiplications have high intensity and sit under the
-        compute roof; elementwise operations like a softmax have low intensity and sit under the memory roof.
-        Later we will see, by measurement, that a full pi0 step is firmly compute-bound.</p>
-
-      <div class="callout tip">
-        <span class="label">Key idea</span>
-        <p>Utilization is measured as <strong>MFU</strong>, model FLOPs utilization: the fraction of the chip's
-          peak arithmetic rate you actually achieve. \( \text{MFU} = \dfrac{\text{achieved FLOP/s}}{\pi_{\text{peak}}} \).
-          A high MFU means the expensive matrix units are busy; a low MFU means something, data movement, small
-          ops, or idle time, is getting in the way.</p>
+      <h3 id="ch1-mfu">MFU, the number we optimize</h3>
+      <p>Model FLOPs utilization is the fraction of the accelerator's peak arithmetic rate the training step
+        actually achieves. The step's useful work is counted analytically: a transformer forward pass is about
+        \(2ND\) FLOPs for \(N\) parameters and \(D\) tokens, and the backward pass is roughly twice that, so a
+        step is \(\approx 6ND\). Divide the achieved rate by the device's peak:</p>
+      <p>$$ \text{MFU} \;=\; \frac{6\,N\,D}{t_{\text{step}}\;\pi_{\text{peak}}} $$</p>
+      <pre><code class="language-python"># MFU from the analytical FLOP count, computed straight from measured step time.
+flops_per_step = 6 * n_params * n_tokens_per_step   # fwd 2ND + bwd 4ND
+achieved       = flops_per_step / step_time_s        # FLOP/s actually delivered
+mfu            = achieved / peak_flops               # e.g. ~0.32 on one H100</code></pre>
+      <div class="callout warning">
+        <span class="label">Gotcha</span>
+        <p>Do not read the FLOP count from XLA's <code>cost_analysis</code>; on this graph it underreports by
+          roughly <strong>100×</strong> and produces a nonsense sub-1% MFU. The analytical \(6ND\) is the honest
+          number. Part V walks through this and a second, larger measurement error.</p>
       </div>
 
-      <h3 id="ch1-net">Interconnect</h3>
-      <p>Multi-device training only works if devices can exchange data quickly. Inside a node, NVIDIA GPUs are
-        linked by <strong>NVLink</strong>, a high-bandwidth direct connection, and communicate through
-        <strong>NCCL</strong>, the library that implements collective operations like all-reduce and all-gather.
-        TPUs use a dedicated inter-chip interconnect (<strong>ICI</strong>) in a torus topology. The speed of this
-        fabric relative to compute is exactly what decides whether sharding across devices pays off, which is the
-        whole story of the scaling results.</p>
+      <h3 id="ch1-bound">Compute-bound, so there is no single-device win</h3>
+      <p>A kernel is compute-bound when its arithmetic intensity, FLOPs performed per byte moved, is high enough
+        that it sits under the compute roof rather than the bandwidth roof:</p>
+      <p>$$ \text{Perf} \;=\; \min\!\bigl(\pi_{\text{peak}},\; I\times\beta\bigr) $$</p>
+      <p>Large matrix multiplications have high intensity; elementwise work like a softmax does not. The
+        measurement in Part VI shows a full pi0 step running at about <strong>32% MFU with matrix-multiply work at
+        57.7% of device time</strong> and near-zero idle. That is a GEMM-saturated, compute-bound step: there is
+        no speculative kernel-level optimization to chase on one device. The only lever left for throughput is
+        using more devices, which is what the rest of the project is about.</p>
 
-      <dl class="dl-gloss">
-        <dt>FLOP</dt><dd>One floating-point operation, a single multiply or add on real numbers.</dd>
-        <dt>TFLOP/s</dt><dd>Tera-FLOPs per second: one trillion floating-point operations per second, the unit of compute throughput.</dd>
-        <dt>Bandwidth</dt><dd>Bytes moved per second between two levels of memory. Often the true limit, not raw compute.</dd>
-        <dt>HBM</dt><dd>High-bandwidth memory: the fast device memory that holds weights and activations.</dd>
-      </dl>
+      <h3 id="ch1-mem">The memory budget forces sharding</h3>
+      <p>Sharding is not optional for this model. Parameters, gradients, and the optimizer state all have to live
+        in device memory, and AdamW alone keeps two extra full-precision copies of every parameter. A rough
+        budget for gemma_2b makes the point:</p>
+      <pre><code class="language-text">params (bf16)          2 bytes/param
+gradients (bf16)       2 bytes/param
+Adam m, v (fp32)       8 bytes/param
+--------------------------------------------
+                     ~12 bytes per parameter, before activations</code></pre>
+      <p>That multiplies out well past a single accelerator once activations are included, which is exactly why
+        the design shards the parameters and optimizer state across devices with FSDP rather than replicating
+        them. The question is never "does it fit on one device"; it is "how do we split it so each device holds a
+        slice."</p>
+
+      <h3 id="ch1-net">Collectives, and why scaling is a communication problem</h3>
+      <p>Once state is sharded, devices have to exchange it. The two collectives that matter here are
+        <strong>all-gather</strong>, which reassembles a full parameter matrix from its shards before a layer
+        runs, and <strong>reduce-scatter</strong>, which sums gradients and splits the result back into shards.
+        Inside a node these run over NVLink through NCCL. Their cost relative to compute is the whole story of the
+        scaling results: if the all-gather for the next layer hides behind the matmul of the current one, scaling
+        is efficient; if it does not, the communication lands on the critical path.</p>
 
       <div class="drills">
         <h4>Drills</h4>
-        <details><summary>Why can a chip with huge peak TFLOP/s still run a kernel slowly?</summary>
-          <div class="ans">If the kernel is memory-bound, its arithmetic intensity is too low to reach the compute roof; it waits on bandwidth, so the matrix units sit idle regardless of peak rate.</div></details>
-        <details><summary>What does a low MFU tell you?</summary>
-          <div class="ans">That the peak arithmetic units are underused. The cause could be data movement, many small operations, idle bubbles, or unhidden communication; MFU alone does not say which, which is why attribution is needed.</div></details>
+        <details><summary>Why compute MFU from 6ND instead of the compiler's FLOP count?</summary>
+          <div class="ans">XLA's cost_analysis underreports FLOPs on this graph by about 100×, giving a false sub-1% MFU. The analytical 6ND count, times measured step time, gives the real ~32%.</div></details>
+        <details><summary>Given a GEMM-saturated 32% MFU step, where does more throughput come from?</summary>
+          <div class="ans">Not from the kernel, which is already compute-bound. It comes from adding devices, so the remaining problem is making the sharding communication overlap compute.</div></details>
       </div>
     </section>
 
