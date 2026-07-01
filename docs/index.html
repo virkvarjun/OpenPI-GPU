@@ -198,7 +198,7 @@ details .ans{margin:12px 0 2px 22px; font-size:16.5px; color:var(--ink-soft);}
             <li><a href="#ch1-net">Collectives</a></li>
           </ol>
         </li>
-        <li class="chap" data-chap="ch2"><a href="#ch2"><span class="num">II</span><span>The libraries</span></a>
+        <li class="chap" data-chap="ch2"><a href="#ch2"><span class="num">II</span><span>Compiler &amp; kernels</span></a>
           <ol class="subs">
             <li><a href="#ch2-jax">JAX</a></li>
             <li><a href="#ch2-xla">XLA</a></li>
@@ -347,63 +347,44 @@ Adam m, v (fp32)       8 bytes/param
 
     <section class="chapter" id="ch2">
       <span class="chap-num">Part II</span>
-      <h2>The libraries</h2>
-      <p>openpi is written in JAX. To understand the project you need to know what four pieces actually do, and in
-        particular why one of them, cuDNN, refused to run the fast attention kernel on this model.</p>
+      <h2>Compiler and kernels</h2>
+      <p>The stack is standard, so only the two places it constrains the project are worth stating: how XLA's
+        fusion distorts profiling, and why cuDNN's flash kernel is unavailable on this model. The rest, Flax NNX
+        for the model, Optax for AdamW, Orbax for checkpoints, is used as-is.</p>
 
-      <h3 id="ch2-jax">JAX</h3>
-      <p>JAX is a library for numerical computing built around <em>pure functions</em>: a function that takes
-        arrays in and returns arrays out, with no hidden state and no in-place mutation. Because the functions are
-        pure, JAX can apply <em>transforms</em> to them, and the transforms compose. <code>jax.jit</code> compiles
-        a function; <code>jax.grad</code> returns its gradient function; <code>jax.vmap</code> vectorizes it over
-        a batch. A training step is just a pure function that maps (parameters, batch) to (loss, gradients), which
-        is what makes it straightforward to compile and to shard.</p>
-      <pre><code class="language-python"># a training step is a pure function; jit compiles it, grad differentiates it
-@jax.jit
-def step(params, batch):
-    def loss_fn(p):
-        return model.apply(p, batch)          # forward pass -> scalar loss
-    loss, grads = jax.value_and_grad(loss_fn)(params)
-    return loss, grads</code></pre>
+      <h3 id="ch2-jax">The property we exploit</h3>
+      <p>The training step is a pure function of parameters and batch, so its array layouts are declarative:
+        <code>jax.jit</code> traces it, and if the inputs are already committed to shardings, it infers the entire
+        sharded computation from them. Parallelism is a placement decision, not a code change, which is why the
+        FSDP wiring in Part III is a handful of lines rather than a rewrite.</p>
 
-      <h3 id="ch2-xla">XLA</h3>
-      <p>JAX does not run operations one at a time. It traces the function into an intermediate representation
-        called <strong>HLO</strong> and hands it to <strong>XLA</strong>, an optimizing compiler. XLA's most
-        important trick is <em>fusion</em>: it merges many small operations into a single GPU kernel so that
-        intermediate values never leave fast memory. A softmax, for example, is several elementwise operations
-        that XLA fuses with the matrix multiplications around it.</p>
-      <div class="callout note">
-        <span class="label">Foreshadow</span>
-        <p>Fusion is a performance win, but it makes a step harder to profile: once the attention softmax is fused
-          into the neighbouring matrix multiply, a trace charges that time to "matmul," not "attention." Part V
-          shows how the instrument was corrected to handle exactly this.</p>
-      </div>
-
-      <h3 id="ch2-cudnn">cuDNN</h3>
-      <p>cuDNN is NVIDIA's library of hand-tuned kernels for deep learning primitives: convolutions, and a fused
-        <em>flash-attention</em> kernel. It is the fastest path when it applies, but its kernels have shape
-        constraints. On this model, the constraint bites.</p>
+      <h3 id="ch2-xla">Fusion, and what it does to a profiler</h3>
+      <p>XLA lowers the step to HLO and fuses adjacent operations into single kernels so intermediates stay in
+        fast memory. The attention softmax is a cluster of elementwise ops that gets fused into the surrounding
+        matrix multiply. That fusion is the reason the naive profiling approach is wrong in two ways at once, both
+        corrected in Part V:</p>
       <div class="callout warning">
-        <span class="label">Gotcha</span>
-        <p>gemma_2b uses an attention head dimension of <strong>256</strong>. cuDNN's flash-attention kernel
-          requires the head dimension to be <strong>at most 128</strong>, so it rejects the shape outright. The
-          project confirmed this by dropping to head dim 128, where the cuDNN kernel runs. Because 256 is fixed by
-          the model, the usable fused path is XLA's own attention implementation, not cuDNN's.</p>
+        <span class="label">Consequence</span>
+        <p>A fused softmax has no separately attributable time, so a per-op trace charges attention to
+          <em>matmul</em> and reports it as roughly 0%, when ablation shows it is 4.7% of the step. And summing
+          the per-op durations of an async, fused graph undercounts real device time by about <strong>12×</strong>.
+          Both are why device time is taken from a blocked step's wall clock and attention from ablation, not from
+          the trace.</p>
       </div>
 
-      <h3 id="ch2-rest">Flax NNX, Optax, Orbax</h3>
-      <p>Three smaller libraries fill out the stack. <strong>Flax NNX</strong> is the neural-network layer openpi's
-        pi0 is written in; it defines modules and their parameters. <strong>Optax</strong> supplies the optimizer,
-        AdamW in the training step, as a pure function that turns gradients into parameter updates.
-        <strong>Orbax</strong> handles checkpointing: writing and restoring the training state to disk, which the
-        fault-tolerance work builds on.</p>
+      <h3 id="ch2-cudnn">Why cuDNN's flash kernel is out</h3>
+      <p>cuDNN's fused flash-attention kernel is the fastest path when it applies, but it constrains the head
+        dimension. gemma_2b's is 256; the kernel requires at most 128, so it rejects the shape. Confirmed by
+        dropping to head dim 128, where cuDNN runs. Since 256 is fixed by the model, the usable fused path is XLA's
+        <code>implementation="xla"</code>, not cuDNN, which is exactly what the FlashAttention wiring in Part V
+        uses.</p>
 
       <div class="drills">
         <h4>Drills</h4>
-        <details><summary>Why does JAX being "functional" matter for this project?</summary>
-          <div class="ans">Pure functions can be transformed and compiled, and their inputs and outputs can be placed on specific devices. Sharding a computation is then a matter of declaring how the arrays are laid out, not rewriting the code.</div></details>
-        <details><summary>Why could the profiler not see the attention cost directly?</summary>
-          <div class="ans">XLA fuses the softmax into the adjacent matrix-multiply kernel, so the trace attributes the fused time to the matmul. The real attention cost has to be recovered by ablation instead.</div></details>
+        <details><summary>Why does a per-op trace report attention near 0%?</summary>
+          <div class="ans">XLA fuses the softmax into the adjacent matmul kernel, so the fused time is charged to matmul. The real 4.7% is recovered by ablation, not the trace.</div></details>
+        <details><summary>Why is the XLA attention implementation used instead of cuDNN's on gemma_2b?</summary>
+          <div class="ans">cuDNN's flash kernel caps head dimension at 128; gemma_2b uses 256, so the kernel refuses the shape. The XLA implementation has no such limit.</div></details>
       </div>
     </section>
 
