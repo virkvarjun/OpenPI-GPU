@@ -8,10 +8,24 @@ throughput depends on).
 
 | config | device ms/step | MFU | dominant |
 |---|---|---|---|
-| gemma_2b, batch 4, full AdamW | 211.9 | **32.1%** | matmul-FFN 58%, attention ~0% |
+| gemma_2b, batch 4, full AdamW | 211.9 | **32.1%** | matmul-FFN 58%; attention fused (see below) |
 | gemma_2b, batch 4, fwd+bwd (no opt) | 195.6 | **34.7%** | — |
 
-⇒ The step is **compute-bound, GEMM-saturated, attention ≈ 0%** → no single-GPU kernel headroom (V2 conclusion).
+## Attention cost — measured by ablation (the trace can't isolate it)
+
+The step-breakdown showed attention ≈ 0%, which is a **trace artifact**: on GPU, XLA fuses gemma's masked
+`jax.nn.softmax` into the adjacent einsum fusion, so its time is attributed to matmul-FFN. Measured directly
+(`scripts/profile_attention.py`, gemma_2b shapes: B=4, seq=866, 8q/1kv GQA, Hd=256, ×18 layers):
+
+| attention impl | ms/layer | ms/step (×18) | % of 211.9 ms step |
+|---|---:|---:|---:|
+| naive (gemma.py einsum+softmax+einsum) | 0.549 | 9.89 | **4.7%** |
+| flash (`dot_product_attention`, xla) | 0.277 | 4.98 | 2.4% |
+
+⇒ **Attention is ~4.7% of the step, not 0%.** Fused attention would save only ~2.3% of the step — below the
+~15–20% gate, so it is **not worth it** (attention is small because the FFN `mlp_dim=16384` GEMMs dominate at
+this modest sequence length). The V2 conclusion — **compute/GEMM-bound, no worthwhile single-GPU kernel
+headroom** — stands, now on a real measurement rather than a bogus 0%.
 
 ## FSDP strong scaling (fixed global batch 4, fwd+bwd, `sharding.fsdp_sharding` across N GPUs)
 

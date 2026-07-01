@@ -19,9 +19,12 @@ UNDER-COUNTS true device time (async/fusion/gaps) — it read ~11 ms for a gemma
 reliable device measure; the trace is used only for the between-category proportions (assumed ~uniform
 under-count). For a fixed on-device input, wall == device time, so data-wait ≈ 0 (correctly).
 
-Limitations (flagged): attention/FFN GEMMs are both `dot` ops; we separate *softmax* (the audited attention
-headroom) into `attention` and keep matmuls in `matmul-FFN`. Optimizer isolation relies on the optimizer ops
-being scoped; unscoped elementwise lands in `other`. The composition proportions remain best-effort.
+Limitations (flagged): attention/FFN GEMMs are both matmul ops; we keep them in `matmul-FFN` and try to isolate
+the softmax as `attention`. **On GPU, XLA fuses gemma's masked softmax into the adjacent einsum fusion, so the
+trace attributes its time to `matmul-FFN` and `attention` reads ~0 — a FUSION ARTIFACT, not "attention is free".
+Measure the real attention cost by ablation (`scripts/profile_attention.py`), not from this composition.**
+Optimizer isolation relies on the optimizer ops being scoped; unscoped elementwise lands in `other`. The
+composition proportions are best-effort — trust the total (blocked) device time, not fine per-category splits.
 """
 
 from __future__ import annotations
