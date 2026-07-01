@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sharder — fault-tolerant multi-host JAX training for openpi</title>
+<meta name="description" content="A measure-first study of scaling openpi training across GPUs and hosts: device-time attribution, FSDP strong/weak scaling, FlashAttention, comms overlap, and fault tolerance, validated on 4x H100." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root{
+  --bg:#0a0e16; --bg2:#0f1420; --card:#121a29; --line:#1e2a3d;
+  --text:#e7ecf4; --muted:#93a1b5; --dim:#5f6f85;
+  --accent:#35d6a4; --accent2:#6ea8fe; --warn:#f2b544; --bad:#f26d6d;
+  --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"Inter",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.65;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;z-index:-1;background:
+  radial-gradient(900px 600px at 80% -5%,rgba(53,214,164,.10),transparent 60%),
+  radial-gradient(700px 500px at 10% 5%,rgba(110,168,254,.08),transparent 55%);}
+a{color:var(--accent2);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:1060px;margin:0 auto;padding:0 24px}
+.mono{font-family:var(--mono)}
+
+/* nav */
+nav{position:sticky;top:0;z-index:50;backdrop-filter:blur(12px);background:rgba(10,14,22,.7);border-bottom:1px solid var(--line)}
+nav .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+nav .brand{font-weight:800;letter-spacing:-.02em;font-size:18px}
+nav .brand span{color:var(--accent)}
+nav .links{display:flex;gap:22px;font-size:14px;color:var(--muted)}
+nav .links a{color:var(--muted)}
+nav .links a:hover{color:var(--text);text-decoration:none}
+@media(max-width:720px){nav .links{display:none}}
+
+/* hero */
+header{padding:96px 0 60px;border-bottom:1px solid var(--line)}
+.eyebrow{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:18px}
+h1{font-size:clamp(38px,6vw,68px);line-height:1.03;letter-spacing:-.03em;margin:0 0 20px;font-weight:800}
+h1 .grad{background:linear-gradient(120deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{font-size:clamp(17px,2.2vw,21px);color:var(--muted);max-width:760px;margin:0 0 34px}
+.cta{display:flex;gap:14px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:11px 20px;border-radius:10px;font-weight:600;font-size:15px}
+.btn.p{background:var(--accent);color:#04110c}
+.btn.p:hover{background:#43e6b4;text-decoration:none}
+.btn.s{border:1px solid var(--line);color:var(--text);background:var(--bg2)}
+.btn.s:hover{border-color:var(--accent);text-decoration:none}
+
+.chips{display:flex;gap:14px;flex-wrap:wrap;margin-top:46px}
+.chip{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 20px;min-width:150px}
+.chip .n{font-family:var(--mono);font-size:26px;font-weight:600;color:var(--accent)}
+.chip .l{font-size:13px;color:var(--muted);margin-top:2px}
+
+/* sections */
+section{padding:78px 0;border-bottom:1px solid var(--line)}
+.tag{font-family:var(--mono);font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h2{font-size:clamp(26px,3.6vw,38px);letter-spacing:-.02em;margin:0 0 18px;font-weight:700}
+h3{font-size:20px;margin:0 0 8px;letter-spacing:-.01em}
+p{color:#cdd6e4}
+.muted{color:var(--muted)}
+.reveal{opacity:0;transform:translateY(24px);transition:opacity .7s ease,transform .7s ease}
+.reveal.in{opacity:1;transform:none}
+
+.grid{display:grid;gap:20px}
+.g2{grid-template-columns:1fr 1fr}
+.g3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:820px){.g2,.g3{grid-template-columns:1fr}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px}
+.card h3 .k{font-family:var(--mono);color:var(--accent);font-size:14px}
+
+/* study timeline */
+.steps{display:grid;gap:0;counter-reset:s}
+.step{display:grid;grid-template-columns:44px 1fr;gap:18px;padding:18px 0;border-top:1px solid var(--line)}
+.step:first-child{border-top:none}
+.step .num{counter-increment:s;width:44px;height:44px;border-radius:12px;background:var(--bg2);border:1px solid var(--line);display:grid;place-items:center;font-family:var(--mono);color:var(--accent);font-weight:600}
+.step .num::before{content:"0" counter(s)}
+
+/* figures/diagrams */
+.diagram{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:22px;overflow:hidden}
+.cap{font-size:13.5px;color:var(--muted);margin-top:12px}
+svg{display:block;width:100%;height:auto}
+
+/* fsdp anim */
+.gpu{fill:var(--card);stroke:var(--line)}
+.shard{rx:3}
+.flow{stroke-dasharray:4 5;animation:dash 1.1s linear infinite}
+@keyframes dash{to{stroke-dashoffset:-18}}
+.pulse{animation:pulse 2.4s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.gather rect{animation:gather 4s ease-in-out infinite}
+@keyframes gather{0%,12%{transform:translateY(0);opacity:1}
+ 38%,58%{transform:translate(var(--tx),var(--ty));opacity:1}
+ 82%,100%{transform:translateY(0);opacity:1}}
+
+/* charts */
+.bar{transition:height .9s cubic-bezier(.2,.7,.2,1),y .9s cubic-bezier(.2,.7,.2,1);}
+.line-path{stroke-dasharray:1;stroke-dashoffset:1;transition:stroke-dashoffset 1.6s ease}
+.reveal.in .line-path{stroke-dashoffset:0}
+.axis{stroke:var(--line)}
+.glabel{fill:var(--muted);font-size:12px;font-family:var(--mono)}
+.vlabel{fill:var(--text);font-size:12px;font-family:var(--mono);font-weight:600}
+.legend{display:flex;gap:18px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin-top:6px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:middle}
+
+/* results table */
+table{width:100%;border-collapse:collapse;font-size:14.5px}
+th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:12.5px;letter-spacing:.04em;text-transform:uppercase}
+td .mono{color:var(--accent)}
+tr:hover td{background:rgba(255,255,255,.015)}
+
+.callout{background:linear-gradient(180deg,rgba(53,214,164,.06),rgba(53,214,164,0));border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:0 12px 12px 0;padding:18px 22px;margin-top:8px}
+
+/* impact */
+.impact{display:grid;gap:16px}
+.impact .card{border-left:3px solid var(--accent2)}
+
+/* citation */
+.cite{background:#0b1220;border:1px solid var(--line);border-radius:12px;padding:18px 20px;font-family:var(--mono);font-size:13px;color:#c3cee0;overflow-x:auto;white-space:pre}
+.copy{float:right;font-size:12px;color:var(--muted);cursor:pointer;border:1px solid var(--line);border-radius:7px;padding:3px 10px;background:var(--bg2)}
+.copy:hover{color:var(--text);border-color:var(--accent)}
+
+footer{padding:56px 0 80px;color:var(--muted);font-size:14px}
+footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.disc{font-size:13px;color:var(--dim);margin-top:26px;max-width:760px}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <div class="brand">Shard<span>er</span></div>
+  <div class="links">
+    <a href="#premise">Premise</a>
+    <a href="#outline">Study</a>
+    <a href="#internals">Internals</a>
+    <a href="#results">Results</a>
+    <a href="#impact">Impact</a>
+    <a href="https://github.com/virkvarjun/OpenPI-GPU">GitHub</a>
+  </div>
+</div></nav>
+
+<header><div class="wrap">
+  <div class="eyebrow reveal">Systems study · JAX · openpi</div>
+  <h1 class="reveal">Scaling <span class="grad">openpi</span> training,<br/>one measured bottleneck at a time.</h1>
+  <p class="lede reveal">Sharder adds a fault-tolerant, multi-host JAX training path to Physical Intelligence's
+    openpi. Every change is gated on a measurement, not an intuition. The result is a scale-out path validated on
+    4&times; H100, a FlashAttention integration that is on by default, and an instrument set that says exactly
+    where the time goes.</p>
+  <div class="cta reveal">
+    <a class="btn p" href="https://github.com/virkvarjun/OpenPI-GPU">View the repository</a>
+    <a class="btn s" href="#results">Jump to results</a>
+  </div>
+  <div class="chips">
+    <div class="chip reveal"><div class="n">32%</div><div class="l">gemma_2b MFU, 1&times; H100</div></div>
+    <div class="chip reveal"><div class="n">2.85&times;</div><div class="l">weak scaling on 4 GPUs</div></div>
+    <div class="chip reveal"><div class="n">9.3%</div><div class="l">FlashAttention, free</div></div>
+    <div class="chip reveal"><div class="n">36</div><div class="l">tests passing</div></div>
+  </div>
+</div></header>
+
+<!-- PREMISE -->
+<section id="premise"><div class="wrap">
+  <div class="tag reveal">The premise</div>
+  <h2 class="reveal">openpi trains on one host. Real robot data does not fit that budget.</h2>
+  <div class="grid g2" style="margin-top:26px">
+    <div class="reveal">
+      <p>openpi is Physical Intelligence's open-source stack for &pi;-family vision-language-action models. Its
+        training script runs on a single host, and the codebase explicitly guards against multi-process use.
+        Fine-tuning the full model already needs an 80&nbsp;GB accelerator; scaling to more data means scaling
+        across devices and hosts.</p>
+      <p>Sharder adds that path. The design has two non-negotiables: the single-host path stays byte-for-byte
+        identical to upstream, and no optimization ships until the bottleneck it targets has been measured on
+        real hardware.</p>
+    </div>
+    <div class="reveal">
+      <div class="card">
+        <h3>Design constraints</h3>
+        <ul class="muted" style="padding-left:18px;margin:10px 0 0">
+          <li>Additive: single host is unchanged and untouched.</li>
+          <li>Deterministic: multi-process loss and gradients match single-process exactly.</li>
+          <li>Measure first: attribution instrument before any tuning.</li>
+          <li>Fault-tolerant: exact resume and elastic restart.</li>
+          <li>Validated on hardware, not simulated.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div></section>
+
+<!-- STUDY OUTLINE -->
+<section id="outline"><div class="wrap">
+  <div class="tag reveal">The study</div>
+  <h2 class="reveal">A measurement pipeline, run end to end.</h2>
+  <p class="lede reveal" style="margin-bottom:30px">Each stage produces a number that decides the next. Nothing is
+    optimized on a hunch.</p>
+  <div class="steps reveal">
+    <div class="step"><div class="num"></div><div><h3>Instrument the step</h3><p class="muted">Attribute device time per HLO category and compute MFU from the analytical FLOP count. Two profiling errors are corrected up front.</p></div></div>
+    <div class="step"><div class="num"></div><div><h3>Find the single-GPU ceiling</h3><p class="muted">Establish where the time actually goes on one H100, and rule out the speculative optimizations that the numbers do not support.</p></div></div>
+    <div class="step"><div class="num"></div><div><h3>Scale out with FSDP</h3><p class="muted">Shard parameters across devices and measure strong and weak scaling on 1, 2, and 4 GPUs.</p></div></div>
+    <div class="step"><div class="num"></div><div><h3>Attack the measured bottlenecks</h3><p class="muted">FlashAttention for the attention cost that trace attribution hides; XLA overlap flags for the residual collective time.</p></div></div>
+    <div class="step"><div class="num"></div><div><h3>Make it fault-tolerant</h3><p class="muted">Exact deterministic resume from the step counter, and an elastic supervisor that restarts from the last checkpoint.</p></div></div>
+  </div>
+</div></section>
+
+<!-- INTERNALS -->
+<section id="internals"><div class="wrap">
+  <div class="tag reveal">The internals</div>
+  <h2 class="reveal">How the parallelism works.</h2>
+
+  <div class="grid g2" style="margin-top:26px;align-items:center">
+    <div class="reveal">
+      <h3>FSDP: shard, gather, compute, scatter</h3>
+      <p>Each device holds a slice of every weight matrix. Before a layer runs, the slices are
+        <span class="mono" style="color:var(--accent2)">all-gathered</span> into the full matrix; after the
+        backward pass, the gradients are <span class="mono" style="color:var(--accent)">reduce-scattered</span>
+        back to slices. Memory stays sharded; only the working matrix is ever whole.</p>
+      <p class="muted">The scaling behaviour below follows entirely from one question: can that gather hide behind
+        the layer's compute?</p>
+    </div>
+    <div class="diagram reveal">
+      <svg viewBox="0 0 420 220" role="img" aria-label="FSDP all-gather and reduce-scatter animation">
+        <!-- four gpus -->
+        <g font-family="var(--mono)" font-size="10" fill="#93a1b5">
+          <text x="38" y="24">GPU0</text><text x="128" y="24">GPU1</text><text x="218" y="24">GPU2</text><text x="308" y="24">GPU3</text>
+        </g>
+        <g>
+          <rect class="gpu" x="24" y="30" width="72" height="60" rx="8"/>
+          <rect class="gpu" x="114" y="30" width="72" height="60" rx="8"/>
+          <rect class="gpu" x="204" y="30" width="72" height="60" rx="8"/>
+          <rect class="gpu" x="294" y="30" width="72" height="60" rx="8"/>
+        </g>
+        <!-- shards that gather to center -->
+        <g class="gather">
+          <rect x="36" y="46" width="48" height="28" rx="3" fill="#35d6a4" style="--tx:150px;--ty:78px"/>
+          <rect x="126" y="46" width="48" height="28" rx="3" fill="#6ea8fe" style="--tx:60px;--ty:78px"/>
+          <rect x="216" y="46" width="48" height="28" rx="3" fill="#f2b544" style="--tx:-30px;--ty:78px"/>
+          <rect x="306" y="46" width="48" height="28" rx="3" fill="#c98cff" style="--tx:-120px;--ty:78px"/>
+        </g>
+        <!-- compute zone -->
+        <rect x="150" y="150" width="120" height="46" rx="8" fill="none" stroke="#35d6a4" stroke-dasharray="4 4" class="pulse"/>
+        <text x="210" y="177" text-anchor="middle" font-family="var(--mono)" font-size="11" fill="#35d6a4">matmul</text>
+        <!-- flow lines -->
+        <g stroke="#35d6a4" stroke-width="1.4" fill="none" opacity=".5">
+          <path class="flow" d="M60 92 V150"/><path class="flow" d="M150 92 V150"/>
+          <path class="flow" d="M240 92 V150"/><path class="flow" d="M330 92 V150"/>
+        </g>
+      </svg>
+      <div class="cap">All-gather assembles the full weight; the matmul runs; gradients reduce-scatter back to shards. Repeats every layer.</div>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:36px;align-items:center">
+    <div class="diagram reveal" style="order:2">
+      <svg viewBox="0 0 420 210" role="img" aria-label="Naive versus flash attention memory">
+        <text x="12" y="20" font-family="var(--mono)" font-size="11" fill="#f26d6d">naive: materialize T&times;S</text>
+        <g id="naiveGrid"></g>
+        <text x="235" y="20" font-family="var(--mono)" font-size="11" fill="#35d6a4">flash: stream a tile</text>
+        <rect x="235" y="30" width="150" height="150" rx="6" fill="none" stroke="#1e2a3d"/>
+        <rect id="tile" x="235" y="30" width="150" height="26" fill="rgba(53,214,164,.25)" stroke="#35d6a4"/>
+      </svg>
+      <div class="cap">The naive path holds the full score matrix (grows with sequence squared); flash streams a tile and never stores it.</div>
+    </div>
+    <div class="reveal" style="order:1">
+      <h3>Attention: why the memory matters</h3>
+      <p>Trace attribution reports attention near zero percent, because XLA fuses the masked softmax into the
+        neighbouring einsum. Direct ablation shows the real cost, and that it scales with the square of sequence
+        length. FlashAttention never materializes the score matrix, so it is faster and, more importantly, memory
+        cheap enough to unlock long context.</p>
+      <p class="muted">Integrated behind a flag, on by default, numerically identical to the naive path for
+        training and inference.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- RESULTS -->
+<section id="results"><div class="wrap">
+  <div class="tag reveal">The results</div>
+  <h2 class="reveal">Every number below is a measurement on 4&times; H100.</h2>
+
+  <div class="grid g2" style="margin-top:28px">
+    <div class="card reveal">
+      <h3>FSDP scaling — step time</h3>
+      <p class="muted" style="font-size:14px;margin:0 0 10px">Weak scaling holds compute per GPU fixed; strong scaling holds the global batch fixed.</p>
+      <div id="chartScaling"></div>
+      <div class="legend">
+        <span><span class="dot" style="background:#6ea8fe"></span>strong (fixed batch 4)</span>
+        <span><span class="dot" style="background:#35d6a4"></span>weak (4 samples/GPU)</span>
+      </div>
+    </div>
+    <div class="card reveal">
+      <h3>FSDP scaling — aggregate throughput</h3>
+      <p class="muted" style="font-size:14px;margin:0 0 10px">Weak scaling reaches 980 TFLOP/s on 4 GPUs, 2.85&times; a single device.</p>
+      <div id="chartTput"></div>
+      <div class="legend"><span><span class="dot" style="background:#35d6a4"></span>weak aggregate TFLOP/s</span><span><span class="dot" style="background:#2a3550"></span>ideal linear</span></div>
+    </div>
+  </div>
+
+  <div class="grid g2" style="margin-top:20px">
+    <div class="card reveal">
+      <h3>Attention cost vs sequence length</h3>
+      <p class="muted" style="font-size:14px;margin:0 0 10px">Attention is 4.7% of the step today, 86% at 4k tokens. FlashAttention roughly thirds it.</p>
+      <div id="chartAttn"></div>
+      <div class="legend"><span><span class="dot" style="background:#f26d6d"></span>naive</span><span><span class="dot" style="background:#35d6a4"></span>flash</span></div>
+    </div>
+    <div class="card reveal">
+      <h3>FlashAttention, end to end</h3>
+      <p class="muted" style="font-size:14px;margin:0 0 10px">9.3% faster on gemma_2b, MFU 34.7% to 38.3%, bit-identical loss.</p>
+      <div id="chartFlash"></div>
+      <div class="legend"><span><span class="dot" style="background:#5f6f85"></span>naive</span><span><span class="dot" style="background:#35d6a4"></span>flash</span></div>
+    </div>
+  </div>
+
+  <div class="card reveal" style="margin-top:20px">
+    <h3>The full table</h3>
+    <table>
+      <thead><tr><th>Result</th><th>Measurement</th><th>Method</th></tr></thead>
+      <tbody>
+        <tr><td>gemma_2b single-GPU step</td><td><span class="mono">32% MFU</span>, GEMM-bound (211 ms, batch 4, AdamW)</td><td>attribution instrument</td></tr>
+        <tr><td>FSDP strong scaling</td><td><span class="mono">1.44&times;</span> on 4 GPUs, comms-bound at batch 4</td><td>profile_fsdp</td></tr>
+        <tr><td>FSDP weak scaling</td><td><span class="mono">2.85&times;</span> on 4 GPUs, 24.8% MFU, 980 TFLOP/s</td><td>profile_fsdp</td></tr>
+        <tr><td>FlashAttention</td><td><span class="mono">9.3%</span> faster end to end, numerically equivalent</td><td>profile_step_breakdown</td></tr>
+        <tr><td>Comms / compute overlap</td><td><span class="mono">+3.9%</span> at 4 GPUs (tuned XLA flags)</td><td>profile_fsdp</td></tr>
+        <tr><td>Fault tolerance</td><td>exact resume + elastic restart, crash-tested</td><td>elastic_launch_test</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout reveal" style="margin-top:22px">
+    The headline finding: the single-GPU step is already compute-bound and GEMM-saturated, so there is no free
+    lunch in the kernel. Throughput comes from parallelism, and the parallel efficiency is governed by whether the
+    FSDP collective can hide behind compute. Weak scaling keeps each device fed and recovers most of the ideal.
+  </div>
+</div></section>
+
+<!-- IMPACT -->
+<section id="impact"><div class="wrap">
+  <div class="tag reveal">Impact</div>
+  <h2 class="reveal">What this means for openpi going forward.</h2>
+  <div class="impact" style="margin-top:26px">
+    <div class="card reveal"><h3>A multi-host training path that does not break the old one</h3>
+      <p class="muted">openpi gains sharded, multi-device training with deterministic parity to the single-host
+        result, plus exact resume and elastic restart. The single-host path is unchanged, so it is a safe,
+        additive contribution rather than a rewrite.</p></div>
+    <div class="card reveal"><h3>FlashAttention as a default, and a lever for long context</h3>
+      <p class="muted">A free 9.3% today, and the enabling change for longer-horizon, more-camera policies where
+        attention grows toward the majority of the step. Verified bit-identical, so it ships on by default with no
+        retraining.</p></div>
+    <div class="card reveal"><h3>A reusable measurement culture</h3>
+      <p class="muted">The attribution instrument, MFU harness, and scaling profilers outlive this study. They
+        turn "should we optimize X" into a number, and they already retired several tempting-but-wrong ideas
+        before any effort went into them.</p></div>
+    <div class="card reveal"><h3>A clear path to production scale</h3>
+      <p class="muted">The remaining work is scoped and named: a healthy multi-node NCCL environment, fine-grained
+        RLDS resume, and a full convergence run on real data. The systems groundwork for each is already in
+        place.</p></div>
+  </div>
+</div></section>
+
+<!-- CITATION -->
+<section id="cite"><div class="wrap">
+  <div class="tag reveal">Cite</div>
+  <h2 class="reveal">Citation</h2>
+  <p class="lede reveal" style="margin-bottom:20px">If this work is useful, please cite it and link the repository.</p>
+  <div class="cite reveal"><span class="copy" onclick="copyCite()">copy</span><code id="bib">@software{virk2026sharder,
+  author  = {Virk, Arjun},
+  title   = {Sharder: Fault-Tolerant Multi-Host JAX Training for openpi},
+  year    = {2026},
+  url     = {https://github.com/virkvarjun/OpenPI-GPU},
+  note    = {A measure-first study of scaling openpi training:
+             device-time attribution, FSDP strong/weak scaling,
+             FlashAttention, comms overlap, and fault tolerance,
+             validated on 4x H100.}
+}</code></div>
+  <p class="reveal" style="margin-top:20px"><a class="btn p" href="https://github.com/virkvarjun/OpenPI-GPU">github.com/virkvarjun/OpenPI-GPU</a></p>
+</div></section>
+
+<footer><div class="wrap">
+  <div>
+    <div class="brand" style="font-weight:800;font-size:18px">Shard<span style="color:var(--accent)">er</span></div>
+    <div class="disc">Sharder vendors a copy of Physical Intelligence's openpi as its working tree; it is an
+      independent research project and not affiliated with or endorsed by Physical Intelligence. All measurements
+      were collected on gemma_2b (bf16) on a 4&times; H100 node. Reproduce every figure with
+      <span class="mono">python scripts/plot_results.py</span>.</div>
+  </div>
+  <div style="text-align:right">
+    <a href="https://github.com/virkvarjun/OpenPI-GPU">Repository</a><br/>
+    <span class="mono" style="color:var(--dim)">2026 · Arjun Virk</span>
+  </div>
+</div></footer>
+
+<script>
+// reveal on scroll
+const io=new IntersectionObserver((es)=>{es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}})},{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+
+// ---- data ----
+const GPUS=[1,2,4];
+const strongMs=[195.6,169.3,135.5], weakMs=[195.5,249.9,274.6];
+const weakTput=[344,539,980], ideal=[344,688,1376];
+const attnSeq=['866','2048','4096'], attnNaive=[4.7,22,86], attnFlash=[2.4,8.3,30];
+const flashMs=[195.9,177.6];
+
+// ---- tiny svg chart helpers ----
+const NS='http://www.w3.org/2000/svg';
+function el(n,a){const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;}
+function chart(id,w,h){const s=el('svg',{viewBox:`0 0 ${w} ${h}`});document.getElementById(id).appendChild(s);return s;}
+
+// grouped/animated bar chart. series:[{data,color}], cats:[labels], max, unit
+function barChart(id,cats,series,max,{h=190,unit='',fmt=(v)=>v}={}){
+  const w=380,pad=34,bw=(w-pad*2)/cats.length, gh=h-40;
+  const s=chart(id,w,h);
+  s.appendChild(el('line',{x1:pad,y1:h-26,x2:w-6,y2:h-26,class:'axis'}));
+  cats.forEach((c,i)=>{
+    const gx=pad+i*bw, n=series.length, iw=Math.min(30,(bw-14)/n);
+    series.forEach((ser,j)=>{
+      const v=ser.data[i], bh=Math.max(2,(v/max)*gh);
+      const x=gx+(bw- n*iw-(n-1)*4)/2 + j*(iw+4);
+      const r=el('rect',{x:x,y:h-26,width:iw,height:0,rx:3,fill:ser.color,class:'bar','data-h':bh});
+      s.appendChild(r);
+      const t=el('text',{x:x+iw/2,y:h-26-bh-5,'text-anchor':'middle',class:'vlabel','data-y':h-26-bh-5,opacity:0});
+      t.textContent=fmt(v)+unit; t.style.transition='opacity .9s ease .5s'; t.setAttribute('data-fade','1'); s.appendChild(t);
+    });
+    s.appendChild(el('text',{x:gx+bw/2,y:h-9,'text-anchor':'middle',class:'glabel'})).textContent=c;
+  });
+  return s;
+}
+function animBars(s){s.querySelectorAll('.bar').forEach(r=>{const bh=+r.getAttribute('data-h');r.setAttribute('height',bh);r.setAttribute('y',(s.viewBox.baseVal.height-26)-bh);});s.querySelectorAll('[data-fade]').forEach(t=>t.setAttribute('opacity','1'));}
+
+// line chart for scaling
+function lineChart(id,cats,series,max,{h=190,unit=''}={}){
+  const w=380,pad=36,gw=w-pad-10,gh=h-40,s=chart(id,w,h);
+  s.appendChild(el('line',{x1:pad,y1:h-26,x2:w-6,y2:h-26,class:'axis'}));
+  const X=i=>pad+(gw)*(i/(cats.length-1)), Y=v=>(h-26)-(v/max)*gh;
+  series.forEach(ser=>{
+    let d='';ser.data.forEach((v,i)=>{d+=(i?'L':'M')+X(i)+' '+Y(v)+' ';});
+    const p=el('path',{d,fill:'none',stroke:ser.color,'stroke-width':2.4,class:'line-path'});
+    const len=400;p.style.strokeDasharray=len;p.style.strokeDashoffset=len;s.appendChild(p);
+    ser.data.forEach((v,i)=>{
+      s.appendChild(el('circle',{cx:X(i),cy:Y(v),r:3.6,fill:ser.color}));
+      const t=el('text',{x:X(i),y:Y(v)-9,'text-anchor':'middle',class:'vlabel'});t.textContent=v+unit;s.appendChild(t);
+    });
+  });
+  cats.forEach((c,i)=>s.appendChild(el('text',{x:X(i),y:h-9,'text-anchor':'middle',class:'glabel'})).textContent=c+' GPU');
+  s._draw=()=>s.querySelectorAll('.line-path').forEach(p=>p.style.strokeDashoffset=0);
+  return s;
+}
+
+// build attention grid (naive) for the internals diagram
+(function(){const g=document.getElementById('naiveGrid');if(!g)return;const n=6,sz=25;
+ for(let r=0;r<n;r++)for(let c=0;c<n;c++){const rc=el('rect',{x:12+c*sz,y:30+r*sz,width:sz-2,height:sz-2,rx:2,fill:'rgba(242,109,109,.16)',stroke:'#3a2330'});
+  rc.style.animation=`pulse 3s ease-in-out ${(r*n+c)*0.05}s infinite`;g.appendChild(rc);}})();
+// flash tile sweep
+(function(){const t=document.getElementById('tile');if(!t)return;let y=30;setInterval(()=>{y+=26;if(y>154)y=30;t.setAttribute('y',y);},700);})();
+
+// build charts
+const cScal=lineChart('chartScaling',GPUS,[{data:strongMs,color:'#6ea8fe'},{data:weakMs,color:'#35d6a4'}],300,{unit:''});
+const cTput=barChart('chartTput',['1','2','4'],[{data:ideal,color:'#2a3550'},{data:weakTput,color:'#35d6a4'}],1400,{});
+const cAttn=barChart('chartAttn',attnSeq,[{data:attnNaive,color:'#f26d6d'},{data:attnFlash,color:'#35d6a4'}],90,{unit:'%'});
+const cFlash=barChart('chartFlash',['naive','flash'],[{data:[flashMs[0]],color:'#5f6f85'}],210,{});
+// flash: two separate single bars for a cleaner before/after
+document.getElementById('chartFlash').innerHTML='';
+const cFlash2=barChart('chartFlash',['naive','flash'],[{data:flashMs,color:'#35d6a4'}],230,{unit:' ms',fmt:v=>v});
+// recolor first flash bar grey
+cFlash2.querySelectorAll('.bar').forEach((r,i)=>{if(i===0)r.setAttribute('fill','#5f6f85');});
+
+// animate charts when their card scrolls in
+function watch(elId,fn){const t=document.getElementById(elId).closest('.card')||document.getElementById(elId);
+ const o=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){fn();o.disconnect();}}),{threshold:.3});o.observe(t);}
+watch('chartScaling',()=>cScal._draw());
+watch('chartTput',()=>animBars(cTput));
+watch('chartAttn',()=>animBars(cAttn));
+watch('chartFlash',()=>animBars(cFlash2));
+
+function copyCite(){navigator.clipboard.writeText(document.getElementById('bib').innerText);const b=event.target;const o=b.textContent;b.textContent='copied';setTimeout(()=>b.textContent=o,1400);}
+</script>
+</body>
+</html>

@@ -15,6 +15,8 @@ Provenance for each figure is in [FINDINGS.md](FINDINGS.md), [STEP_BREAKDOWN.md]
 [MULTIHOST_VALIDATION.md](MULTIHOST_VALIDATION.md), and [CHANGES.md](CHANGES.md).
 `python scripts/plot_results.py` regenerates every figure from the measured data.
 
+**Project site with animated internals and results: https://virkvarjun.github.io/OpenPI-GPU/**
+
 ## Summary
 
 | Result | Measurement | Source |
