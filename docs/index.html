@@ -630,6 +630,130 @@ def step(params, batch):
       </div>
     </section>
 
+    <section class="chapter" id="ch5">
+      <span class="chap-num">Part V</span>
+      <h2>The project, gap by gap</h2>
+      <p>Sharder was built as a set of numbered goals, G1 through G6, each closing one gap between openpi's
+        single-host script and a multi-host, fault-tolerant one. For each, the interesting content is the same
+        three things: what was missing, how it was actually done in the code, and what it bought.</p>
+
+      <h3 id="ch5-g1">G1 · Bringing up multi-host</h3>
+      <p><em>Motivation.</em> To train across machines, JAX has to fuse the separate processes into one logical
+        program, so that a collective like all-gather spans every device. That handshake is
+        <code>jax.distributed.initialize</code>.</p>
+      <p><em>Mechanism.</em> A small module reads the coordinator address, the process count, and this process's
+        index from the environment and performs the handshake, and does nothing at all when there is a single
+        process. The single-host path is therefore untouched.</p>
+      <figure>
+        <div class="svg-wrap anim">
+          <svg viewBox="0 0 600 170" role="img" aria-label="Four separate processes fused by initialize into one program">
+            <g stroke-width="1.3" class="f-p2 s-r">
+              <rect x="30" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-30px)"/>
+              <rect x="170" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-50px)"/>
+              <rect x="340" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-50px)"/>
+              <rect x="480" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-30px)"/>
+            </g>
+            <g class="t-l" text-anchor="middle"><text x="75" y="66">proc 0</text><text x="215" y="66">proc 1</text><text x="385" y="66">proc 2</text><text x="525" y="66">proc 3</text></g>
+            <rect class="s-a" x="20" y="30" width="560" height="64" rx="10" fill="none" stroke-width="1.6" data-draw style="--len:1250"/>
+            <text class="t-a" x="300" y="128" text-anchor="middle" data-fade style="transition-delay:1s">initialize() → one program, one global device set</text>
+          </svg>
+        </div>
+        <figcaption>G1: the same program starts on every machine; initialize() joins them so collectives span all devices. A no-op when run single-process.</figcaption>
+      </figure>
+
+      <h3 id="ch5-g23">G2 / G3 · Sharding with bit-parity</h3>
+      <p><em>Motivation.</em> openpi's loader raised <code>NotImplementedError</code> for more than one process.
+        Removing that guard is easy; doing it so the result matches single-process training exactly is the real
+        work.</p>
+      <p><em>Mechanism.</em> The within-batch sampler from Part III gives each process a contiguous slice of one
+        deterministic global order, so the union of slices is the single-process batch. A test asserts that the
+        multi-process loss and gradients equal the single-process reference.</p>
+      <div class="callout tip">
+        <span class="label">Intellectual core · parity</span>
+        <p>The design target was <strong>bit-precise parity</strong>: multi-process training reproduces the
+          single-process loss and gradients exactly. Scaling then never changes what the model learns, only how
+          fast it learns it.</p>
+      </div>
+
+      <h3 id="ch5-g6">G6 · The instrument, and two corrections</h3>
+      <p><em>Motivation.</em> The project's rule is to never optimize a bottleneck it has not measured. That
+        requires an instrument that attributes a step's device time to categories, attention, matmul, optimizer,
+        and so on, and reports utilization honestly.</p>
+      <p><em>Mechanism.</em> The instrument maps each compiled operation back to its source scope and assigns its
+        time to a category. Building it surfaced two measurement errors that, uncorrected, told the wrong story.</p>
+      <div class="callout warning">
+        <span class="label">Intellectual core · corrections</span>
+        <p>First, summing the durations of operations in a profiler trace <strong>undercounts real device time by
+          roughly 12×</strong>, because of asynchrony, fusion, and gaps between operations; using the wall time of
+          a blocked step instead gives the true figure. Second, reading FLOPs from XLA's
+          <code>cost_analysis</code> <strong>underreports them by roughly 100×</strong> on this graph; computing
+          FLOPs analytically as \(6ND\), for \(N\) parameters and \(D\) tokens, gives a sane MFU. Before the
+          corrections the step looked 91% "data-wait" at 0.2% MFU; after, it is what it truly is.</p>
+      </div>
+      <p><em>Result.</em> A gemma_2b step runs at <strong>about 32% MFU</strong> on one H100, with matrix-multiply
+        work at 57.7% of device time and near-zero idle. The step is compute-bound and GEMM-saturated: there is no
+        speculative single-GPU optimization to chase, so the lever is parallelism.</p>
+
+      <h3 id="ch5-g4">G4 · Exact resume, without storing the iterator</h3>
+      <p><em>Motivation.</em> A crashed run must resume on exactly the examples it had reached, with none repeated
+        or skipped. The usual approach checkpoints the data iterator's internal state, which is fragile.</p>
+      <p><em>Mechanism.</em> Because the example order is a pure function of the seed and the epoch, and the
+        training state already counts steps, the resume position can be <em>derived</em> rather than stored: the
+        step counter maps to an (epoch, offset), and the sampler seeks there. No iterator blob is ever
+        checkpointed. A test confirms the resumed stream continues exactly, including across an epoch boundary.</p>
+      <div class="callout tip">
+        <span class="label">Intellectual core · derive-don't-store</span>
+        <p>When order is a deterministic function of (seed, epoch), the step counter is enough to reconstruct
+          exactly where to resume. State you can derive is state you never have to save.</p>
+      </div>
+
+      <h3 id="ch5-g5">G5 · Elastic restart</h3>
+      <p><em>Motivation.</em> On a large cluster, processes and nodes die. Training should survive that by
+        restarting from the last checkpoint rather than starting over.</p>
+      <p><em>Mechanism.</em> A supervisor runs the training command and, if it exits with an error, relaunches it
+        with a resume flag, up to a retry limit with backoff. It composes the earlier pieces: G1 brings the
+        cluster back up, Orbax restores the checkpoint, and G4 seeks the data to the right step. A fault-injection
+        test kills a run partway and asserts it resumes with no lost or duplicated work.</p>
+      <figure>
+        <div class="svg-wrap anim">
+          <svg viewBox="0 0 600 130" role="img" aria-label="Elastic restart loop: run, crash, relaunch, resume from checkpoint">
+            <g stroke-width="1.3">
+              <rect class="f-p2 s-a" x="24" y="46" width="96" height="40" rx="6" data-fade/>
+              <text class="t-a" x="72" y="70" text-anchor="middle" data-fade>run</text>
+              <rect class="f-p2 s-b" x="176" y="46" width="96" height="40" rx="6" data-fade style="transition-delay:.25s"/>
+              <text class="t-b" x="224" y="70" text-anchor="middle" data-fade style="transition-delay:.25s">crash ✗</text>
+              <rect class="f-p2 s-r" x="328" y="46" width="110" height="40" rx="6" data-fade style="transition-delay:.5s"/>
+              <text class="t-l" x="383" y="70" text-anchor="middle" data-fade style="transition-delay:.5s">relaunch</text>
+              <rect class="f-p2 s-a" x="494" y="46" width="90" height="40" rx="6" data-fade style="transition-delay:.75s"/>
+              <text class="t-a" x="539" y="65" text-anchor="middle" data-fade style="transition-delay:.75s">resume at</text>
+              <text class="t-a" x="539" y="79" text-anchor="middle" data-fade style="transition-delay:.75s">right step</text>
+            </g>
+            <g class="s-a flow" stroke-width="1.2" marker-end="url(#ar3)"><path d="M120 66 H172"/><path d="M272 66 H324"/><path d="M438 66 H490"/></g>
+            <path class="s-r" stroke-width="1.1" fill="none" data-draw style="--len:640" d="M539 86 V110 H72 V90"/>
+            <defs><marker id="ar3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="f-a" d="M0 0 L6 3 L0 6 Z"/></marker></defs>
+          </svg>
+        </div>
+        <figcaption>G5: the supervisor turns a crash into a relaunch that resumes from the last checkpoint at the exact step, closing the loop.</figcaption>
+      </figure>
+
+      <h3 id="ch5-flash">FlashAttention, wired and verified</h3>
+      <p><em>Motivation.</em> Attention's cost was hidden by fusion; once measured it was worth fusing for memory
+        and for longer context.</p>
+      <p><em>Mechanism.</em> The fused kernel is wired into the Gemma attention behind a flag, correctly handling
+        the block-causal mask, the pre-scaling of the query, and the grouped-query head layout. It is verified to
+        produce the same loss as the naive path, to bit precision, for both training and inference.</p>
+      <p><em>Result.</em> A free <strong>9.3%</strong> end-to-end speedup, enabled by default because it changes
+        no outputs. The measured detail is in the results.</p>
+
+      <div class="drills">
+        <h4>Drills</h4>
+        <details><summary>What were the two profiling corrections, and why did they matter?</summary>
+          <div class="ans">Device time was taken from a blocked step's wall time rather than summed trace durations (which undercount ~12×), and FLOPs were computed analytically as 6ND rather than read from cost_analysis (which underreports ~100×). Together they turned a false "91% data-wait, 0.2% MFU" picture into the real GEMM-bound 32% MFU.</div></details>
+        <details><summary>How does resume work without checkpointing the data iterator?</summary>
+          <div class="ans">The example order is a pure function of (seed, epoch), so the step counter alone determines the (epoch, offset) to seek to. The position is derived from state that already exists, not stored separately.</div></details>
+      </div>
+    </section>
+
     <!-- CHAPTERS-INSERT -->
 
     <section class="chapter" id="ch7">
