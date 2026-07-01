@@ -50,6 +50,10 @@ class Config:
     num_kv_heads: int
     head_dim: int
     lora_configs: dict[str, lora.LoRAConfig] = dataclasses.field(default_factory=dict)
+    # If True, use a fused/flash attention kernel (jax.nn.dot_product_attention) instead of the naive
+    # einsum+softmax+einsum. Memory-efficient (no T×S matrix) and faster at long sequence; ~bf16-equal to naive
+    # (verified in scripts/profile_attention.py). Default False keeps the exact upstream path.
+    use_flash_attention: bool = False
 
 
 Variant = Literal["dummy", "gemma_300m", "gemma_300m_lora", "gemma_2b", "gemma_2b_lora"]
@@ -213,22 +217,26 @@ class Attention(nn.Module):
             k = jnp.concatenate([cache_k, k], axis=1)
             v = jnp.concatenate([cache_v, v], axis=1)
 
-        q = einops.rearrange(q, "B T (K G) H -> B T K G H", K=self.configs[0].num_kv_heads)
-        logits = jnp.einsum("BTKGH,BSKH->BKGTS", q, k, preferred_element_type=jnp.float32)
-
         if attn_mask.shape != (q.shape[0], 1, q.shape[1], k.shape[1]):
             raise ValueError(
                 f"Attention mask with shape {attn_mask.shape} but shapes for q and k are: {q.shape} and {k.shape}"
             )
 
-        # big_neg = jnp.finfo(logits.dtype).min
-        big_neg = -2.3819763e38  # See gemma/modules.py
-        masked_logits = jnp.where(attn_mask[:, :, None, :, :], logits, big_neg)
-
-        probs = jax.nn.softmax(masked_logits, axis=-1).astype(dtype)
-
-        encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs, v)
-        encoded = einops.rearrange(encoded, "B T K G H -> B T (K G) H")
+        if self.configs[0].use_flash_attention:
+            # Fused/flash path. q is [B,T,N,H] (already RoPE'd + scaled by head_dim**-0.5 above); k,v [B,S,K,H]
+            # (GQA — dot_product_attention broadcasts the K kv heads to N query heads). scale=1.0 because q is
+            # pre-scaled. Memory-efficient (no T×S matrix), faster at long seq, ~bf16-equal to naive
+            # (scripts/profile_attention.py: maxdiff ~0.002). encoded: [B,T,N,H].
+            encoded = jax.nn.dot_product_attention(q, k, v, mask=attn_mask, scale=1.0, implementation="xla")
+        else:
+            qg = einops.rearrange(q, "B T (K G) H -> B T K G H", K=self.configs[0].num_kv_heads)
+            logits = jnp.einsum("BTKGH,BSKH->BKGTS", qg, k, preferred_element_type=jnp.float32)
+            # big_neg = jnp.finfo(logits.dtype).min
+            big_neg = -2.3819763e38  # See gemma/modules.py
+            masked_logits = jnp.where(attn_mask[:, :, None, :, :], logits, big_neg)
+            probs = jax.nn.softmax(masked_logits, axis=-1).astype(dtype)
+            encoded = jnp.einsum("BKGTS,BSKH->BTKGH", probs, v)
+            encoded = einops.rearrange(encoded, "B T K G H -> B T (K G) H")
 
         out = []
         start = 0

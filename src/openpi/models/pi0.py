@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 
 import einops
@@ -67,8 +68,12 @@ class Pi0(_model.BaseModel):
     def __init__(self, config: pi0_config.Pi0Config, rngs: nnx.Rngs):
         super().__init__(config.action_dim, config.action_horizon, config.max_token_len)
         self.pi05 = config.pi05
-        paligemma_config = _gemma.get_config(config.paligemma_variant)
-        action_expert_config = _gemma.get_config(config.action_expert_variant)
+        paligemma_config = dataclasses.replace(
+            _gemma.get_config(config.paligemma_variant), use_flash_attention=config.use_flash_attention
+        )
+        action_expert_config = dataclasses.replace(
+            _gemma.get_config(config.action_expert_variant), use_flash_attention=config.use_flash_attention
+        )
         # TODO: rewrite gemma in NNX. For now, use bridge.
         llm = nnx_bridge.ToNNX(
             _gemma.Module(
