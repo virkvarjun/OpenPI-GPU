@@ -43,7 +43,7 @@ def _fake_inputs(cfg, rng, batch_size=1):
     return jax.tree.map(rand, obs_spec), jax.tree.map(rand, act_spec)
 
 
-def build_step(variant: str = "dummy", batch_size: int = 1, optimizer: str = "adamw"):
+def build_step(variant: str = "dummy", batch_size: int = 1, optimizer: str = "adamw", flash: bool = False):
     # On a real GPU/TPU slice, pass --variant gemma_2b for the production breakdown. On CPU keep `dummy`.
     small = variant == "dummy"
     cfg = pi0_config.Pi0Config(
@@ -51,6 +51,7 @@ def build_step(variant: str = "dummy", batch_size: int = 1, optimizer: str = "ad
         action_expert_variant="dummy" if small else "gemma_300m",
         action_horizon=4 if small else 50,
         max_token_len=8 if small else 48,
+        use_flash_attention=flash,
     )
     rng = jax.random.key(0)
     model = cfg.create(rng)
@@ -104,6 +105,7 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--iters", type=int, default=8)
+    parser.add_argument("--flash", action="store_true", help="use fused/flash attention")
     parser.add_argument("--optimizer", default="adamw", choices=["adamw", "sgd", "none"],
                         help="none = forward+backward only (fits gemma_2b on 32GB); sgd = light state")
     args = parser.parse_args()
@@ -124,7 +126,7 @@ def main() -> None:
     # how training/checkpoints.py wraps jitted regions).
     with at.disable_typechecking():
         run_step, compiled, n_params = build_step(
-            variant=args.variant, batch_size=args.batch_size, optimizer=args.optimizer
+            variant=args.variant, batch_size=args.batch_size, optimizer=args.optimizer, flash=args.flash
         )
         trace_dir = tempfile.mkdtemp()
         bd = attribution.attribute_step(run_step, compiled, trace_dir=trace_dir, warmup=args.warmup, iters=args.iters)
