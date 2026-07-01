@@ -56,23 +56,30 @@ longer context.
 **Verdict:** enable `use_flash_attention=True` — free 9.3% + memory now, and the key unlock for longer context.
 The compute is still GEMM-dominated (matmul-FFN ~58%), so scale-out (FSDP) remains the main throughput lever.
 
-## Comms/compute overlap — attempted, INCONCLUSIVE (node released mid-run)
+## Comms/compute overlap — DONE (tuned XLA flags, modest real gain)
 
-The weak-scaling residual (device time grows 195→275 ms; ~30% of ideal lost) is FSDP all-gather/reduce-scatter
-not hidden behind compute. The fix is XLA's latency-hiding scheduler + pipelined async collectives + large
-combine thresholds (`scripts/fsdp_xla_flags.sh`). BEFORE/AFTER weak-scaling sweep (2 & 4 GPU, default vs tuned):
-only the first cell completed before the H100 node was released —
+The weak-scaling residual (device time grows with GPUs) is FSDP all-gather/reduce-scatter not fully hidden behind
+compute. Tuned XLA flags (`scripts/fsdp_xla_flags.sh`: latency-hiding scheduler + pipelined async collectives +
+large combine thresholds) vs default, weak scaling, **flash attention on** (so 1-GPU anchor is 178 ms, not 195):
 
-| config | device ms/step | per-GPU MFU |
-|---|---:|---:|
-| 2-GPU, default flags | 232.4 | 29.2% |
-| 2-GPU, tuned flags | *(not captured — node released)* | |
-| 4-GPU, default / tuned | *(not captured)* | |
+| GPUs | default ms | tuned ms | gain | tuned aggregate | tuned MFU |
+|-----:|-----------:|---------:|-----:|----------------:|----------:|
+| 1 | 178.2 | 178.2 | — (no collectives) | 378 TFLOP/s | 38.1% |
+| 2 | 232.3 | 227.0 | **2.3%** | 593 TFLOP/s | 29.9% |
+| 4 | 255.9 | 246.0 | **3.9%** | 1094 TFLOP/s | 27.6% |
 
-**Status: PENDING RE-RUN.** The 2-GPU default (232 ms / 29.2%) is consistent with the earlier weak-scaling point
-(~250 ms / 27%); the tuned-vs-default delta — the actual overlap win — was not measured. Reproduce with
-`source scripts/fsdp_xla_flags.sh` then the weak-scaling sweep. Honest note: recent jaxlib enables some overlap
-by default, so the tuned gain may be modest; this must be measured, not assumed.
+**The gain is real but modest, and grows with GPU count** (more comms to hide → 2.3% @ 2-GPU, 3.9% @ 4-GPU).
+Honest reading: **recent jaxlib already overlaps most collectives by default**, so the tuned flags recover only
+the last few percent — the FSDP comms are already largely hidden. The remaining weak-scaling gap (178→246 ms even
+tuned) is now mostly the *fundamental* un-hideable reduce-scatter/all-gather on the critical path, not a tuning
+miss. So: ~4% free at 4-GPU, worth setting, but there's **no large overlap headroom left** — the comms tax is
+close to its practical floor for this model/config. See `figures/comms_overlap.png`.
+
+## Figures
+
+`python scripts/plot_results.py` regenerates all of these into `figures/` from the measured numbers:
+`fsdp_scaling_time.png`, `fsdp_scaling_throughput.png`, `fsdp_scaling_mfu.png` (strong vs weak),
+`attention_vs_seq.png` (attention grows ~seq²), `flash_end_to_end.png` (9.3% win), `comms_overlap.png`.
 
 ## FSDP strong scaling (fixed global batch 4, fwd+bwd, `sharding.fsdp_sharding` across N GPUs)
 
