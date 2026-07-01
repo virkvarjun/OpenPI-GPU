@@ -1,133 +1,147 @@
 <!-- SHARDER BANNER -->
-> ⚠️ **This is not upstream openpi.** This repo (`OpenPI-JAX-`) **vendors** a copy of Physical Intelligence's
-> openpi as the working tree for the **Sharder** project — a fault-tolerant, multi-host JAX training path.
-> See **[SHARDER.md](SHARDER.md)** and **[PLAN.md](PLAN.md)**. The original from-scratch JAX recreation lives on
-> the `scaffold` branch. The upstream README follows unmodified below.
+> This is not upstream openpi. This repository vendors a copy of Physical Intelligence's openpi as the working
+> tree for Sharder, a fault-tolerant, multi-host JAX training path. See [SHARDER.md](SHARDER.md) and
+> [PLAN.md](PLAN.md). The original from-scratch JAX recreation lives on the `scaffold` branch. The upstream
+> README follows below, unmodified.
 
 ---
 
-# Sharder — results, experiments & ablations
+# Sharder: fault-tolerant multi-host JAX training for openpi
 
-**Sharder** adds a fault-tolerant, multi-host JAX training path to openpi, driven by a strict rule: *never
-optimize a speculative bottleneck — measure first.* Everything below is a **real measurement** on a runpod
-**4× H100 80GB** node (gemma_2b, bf16) or the CPU/localhost cheap-ladder. Full provenance in
-[FINDINGS.md](FINDINGS.md), [STEP_BREAKDOWN.md](STEP_BREAKDOWN.md), [MULTIHOST_VALIDATION.md](MULTIHOST_VALIDATION.md),
-[CHANGES.md](CHANGES.md). Regenerate every figure with `python scripts/plot_results.py`.
+Sharder adds a multi-host, fault-tolerant training path to openpi. The guiding constraint throughout is that an
+optimization is applied only after the bottleneck it targets has been measured. The numbers below were collected
+on a 4× H100 80GB node (gemma_2b, bf16); the correctness tests run on a CPU and localhost multi-process ladder.
+Provenance for each figure is in [FINDINGS.md](FINDINGS.md), [STEP_BREAKDOWN.md](STEP_BREAKDOWN.md),
+[MULTIHOST_VALIDATION.md](MULTIHOST_VALIDATION.md), and [CHANGES.md](CHANGES.md).
+`python scripts/plot_results.py` regenerates every figure from the measured data.
 
-## Headline results
+## Summary
 
-| Result | Number | Where |
+| Result | Measurement | Source |
 |---|---|---|
-| gemma_2b single-GPU step | **32% MFU** (211 ms, batch 4, full AdamW), GEMM-bound | `STEP_BREAKDOWN.md` |
-| **FlashAttention** (now default-on) | **9.3% faster** end-to-end (34.7→38.3% MFU), bit-identical | `flash_end_to_end.png` |
-| FSDP **weak** scaling | **2.85× on 4 GPUs** @ 24.8% MFU (980 TFLOP/s) | `fsdp_scaling_*.png` |
-| FSDP **strong** scaling | 1.44× on 4 GPUs (comms-bound at batch 4) | `fsdp_scaling_*.png` |
-| Comms/compute overlap (tuned XLA flags) | +2.3% @2-GPU, **+3.9% @4-GPU** | `comms_overlap.png` |
-| Fault tolerance | exact-resume (G4) + elastic restart (G5), tested | `elastic_launch_test.py` |
-| Test suite (cheap ladder) | **36 green** | `src/openpi/training/*_test.py` |
+| gemma_2b single-GPU step | 32% MFU (211 ms, batch 4, full AdamW), GEMM-bound | `STEP_BREAKDOWN.md` |
+| FlashAttention (default) | 9.3% faster end-to-end (34.7 to 38.3% MFU), numerically equivalent | `flash_end_to_end.png` |
+| FSDP weak scaling | 2.85× on 4 GPUs at 24.8% MFU (980 TFLOP/s) | `fsdp_scaling_*.png` |
+| FSDP strong scaling | 1.44× on 4 GPUs, comms-bound at batch 4 | `fsdp_scaling_*.png` |
+| Comms/compute overlap | +2.3% at 2 GPUs, +3.9% at 4 GPUs (tuned XLA flags) | `comms_overlap.png` |
+| Fault tolerance | exact resume (G4) and elastic restart (G5), tested | `elastic_launch_test.py` |
+| Test suite (cheap ladder) | 36 passing | `src/openpi/training/*_test.py` |
 
-## 1. Step attribution — where does the time go?
+## 1. Step-time attribution
 
-Built a device-time attribution instrument ([`attribution.py`](src/openpi/training/attribution.py)); fixing two
-XLA-metric bugs along the way (trace-op-sum under-counts device time ~12×; `cost_analysis` under-reports FLOPs
-~100×). Corrected picture of the gemma_2b step (1× H100, batch 4, full AdamW):
+Device time is attributed per HLO category by an instrument in
+[`attribution.py`](src/openpi/training/attribution.py). It corrects two measurement errors present in a naive
+profiling setup: summing Chrome-trace op durations undercounts device time by roughly 12×, and `cost_analysis`
+underreports FLOPs by roughly 100×. The corrected breakdown of one gemma_2b step (1× H100, batch 4, full AdamW):
 
 | category | % of device time |
 |---|---:|
-| matmul-FFN | **57.7%** |
+| matmul-FFN | 57.7% |
 | other (AdamW, flow-matching, RNG, action expert) | 34.4% |
 | vision (SigLIP) | 4.8% |
 | embedding | 3.0% |
-| attention | ~0% *in trace* → **4.7% by ablation** (see §3) |
+| attention | ~0% in trace; 4.7% by ablation (Section 3) |
 
-⇒ **The step is compute-bound and GEMM-saturated at ~32% MFU** — no speculative single-GPU headroom. Throughput
-must come from scale-out (FSDP). Speculative optimizations (batched H2D, input-pipeline) were **refuted by
-measurement** ([H2D_SPLIT.md](H2D_SPLIT.md), [DISPATCH_PROFILE.md](DISPATCH_PROFILE.md)).
+The step is compute-bound and GEMM-saturated at 32% MFU, so there is no headroom in the single-GPU step itself
+and throughput has to come from parallelism. Candidate optimizations that were tested and rejected on the
+measurements include batched host-to-device transfer and input-pipeline restructuring
+([H2D_SPLIT.md](H2D_SPLIT.md), [DISPATCH_PROFILE.md](DISPATCH_PROFILE.md)).
 
-## 2. FSDP scaling — strong vs weak
+## 2. FSDP scaling
 
-Real `sharding.fsdp_sharding` across 1/2/4 H100s ([`profile_fsdp.py`](scripts/profile_fsdp.py)).
+FSDP is applied with `sharding.fsdp_sharding` across 1, 2, and 4 H100s
+([`profile_fsdp.py`](scripts/profile_fsdp.py)). Strong scaling holds the global batch fixed at 4; weak scaling
+holds the per-GPU batch fixed at 4.
 
 | | 1 GPU | 2 GPU | 4 GPU |
 |---|---|---|---|
-| **strong** (fixed batch 4) — ms / MFU | 195.6 / 34.7% | 169.3 / 20.1% | 135.5 / **12.5%** |
-| **weak** (4 samples/GPU) — ms / MFU | 195.5 / 34.8% | 249.9 / 27.2% | 274.6 / **24.8%** |
-| weak aggregate | 344 | 539 | **980 TFLOP/s** |
+| strong (fixed batch 4), ms / MFU | 195.6 / 34.7% | 169.3 / 20.1% | 135.5 / 12.5% |
+| weak (4 samples/GPU), ms / MFU | 195.5 / 34.8% | 249.9 / 27.2% | 274.6 / 24.8% |
+| weak aggregate | 344 | 539 | 980 TFLOP/s |
 
 ![FSDP step time](figures/fsdp_scaling_time.png)
 ![FSDP throughput](figures/fsdp_scaling_throughput.png)
 
-**Reading:** strong scaling collapses (at batch 4, 4-GPU = 1 sample/GPU → all-gather dominates, comms-bound).
-**Weak scaling recovers it — 2.85× on 4 GPUs at ~25% MFU.** FSDP shards *memory* well but needs enough per-GPU
-compute to hide the collective.
+Under strong scaling the per-GPU batch shrinks to a single sample at 4 GPUs, at which point the parameter
+all-gather dominates and per-GPU MFU falls to 12.5%. Weak scaling keeps each device saturated and reaches 2.85×
+aggregate throughput on 4 GPUs at 24.8% MFU. FSDP shards parameter memory effectively but requires enough per-GPU
+compute to overlap the collective.
 
-## 3. Attention ablation — the "0%" mystery, and FlashAttention
+## 3. Attention cost and FlashAttention
 
-Attention showed ~0% in the trace — a **fusion artifact** (XLA folds gemma's masked softmax into the neighbouring
-einsum on GPU). Measured *directly* by ablation ([`profile_attention.py`](scripts/profile_attention.py)), attention
-grows ~seq² and crosses the "worth fusing" gate past ~2k tokens:
+Trace-based attribution assigns attention close to 0% of the step. This is an artifact of fusion: on GPU, XLA
+folds gemma's masked softmax into the adjacent einsum and charges the fused time to the matmul category. The true
+cost is recovered by direct ablation at fixed shapes ([`profile_attention.py`](scripts/profile_attention.py)),
+and scales with the square of sequence length:
 
 | sequence | naive attn % of step | flash-xla | naive attn-matrix memory |
 |---:|---:|---:|---:|
-| 866 (pi0 today) | 4.7% | 2.4% | 0.14 GB/layer |
+| 866 (current pi0) | 4.7% | 2.4% | 0.14 GB/layer |
 | 2048 | 22% | 8.3% | 0.81 GB/layer |
 | 4096 | 86% | 30% | 3.22 GB/layer |
 
 ![Attention vs sequence](figures/attention_vs_seq.png)
 
-**FlashAttention** (`jax.nn.dot_product_attention`) is wired into gemma behind `use_flash_attention` (**default
-on**), bit-identical to naive for both training and inference (parity maxdiff **0.0**;
-[`pi0_flash_test.py`](src/openpi/models/pi0_flash_test.py)). End-to-end gemma_2b:
+FlashAttention (`jax.nn.dot_product_attention`) is wired into gemma under the `use_flash_attention` flag, enabled
+by default. It is numerically equivalent to the naive path for both training and inference, with loss parity to
+bit precision ([`pi0_flash_test.py`](src/openpi/models/pi0_flash_test.py)). End-to-end on gemma_2b:
 
 ![FlashAttention end-to-end](figures/flash_end_to_end.png)
 
-**9.3% faster** (195.9→177.6 ms, 34.7→38.3% MFU) — larger than the forward-only ablation predicted because the
-**backward pass benefits most** (naive backprops through the T×S matrix; flash recomputes it fused). Honest
-caveats: cuDNN flash rejects gemma_2b's head_dim=256 (needs ≤128) so flash-xla is the path; **PagedAttention does
-not apply** (it's an inference KV-cache technique, no KV cache in training).
+The measured reduction is 9.3% (195.9 ms to 177.6 ms, 34.7% to 38.3% MFU), larger than the forward-only ablation
+predicts. The backward pass accounts for the difference: the naive path stores and differentiates the full T×S
+score matrix, whereas the fused kernel recomputes it. Two limitations apply. The cuDNN flash kernel rejects
+gemma_2b's head dim of 256 (it supports at most 128), so the XLA implementation is used. PagedAttention is
+specific to autoregressive inference with a KV cache and does not apply to the training step.
 
-## 4. Comms/compute overlap — the last FSDP lever
+## 4. Comms/compute overlap
 
-Tuned XLA flags ([`fsdp_xla_flags.sh`](scripts/fsdp_xla_flags.sh): latency-hiding scheduler + pipelined async
-collectives + large combine thresholds) vs default, weak scaling, flash on:
+The residual weak-scaling gap is the portion of the FSDP all-gather and reduce-scatter that is not overlapped
+with compute. A tuned XLA flag set ([`fsdp_xla_flags.sh`](scripts/fsdp_xla_flags.sh): latency-hiding scheduler,
+pipelined async collectives, large collective-combine thresholds) is compared against the defaults under weak
+scaling with FlashAttention enabled:
 
 | GPUs | default | tuned | gain |
 |---:|---:|---:|---:|
-| 2 | 232.3 ms | 227.0 ms | **2.3%** |
-| 4 | 255.9 ms | 246.0 ms | **3.9%** (1094 TFLOP/s) |
+| 2 | 232.3 ms | 227.0 ms | 2.3% |
+| 4 | 255.9 ms | 246.0 ms | 3.9% (1094 TFLOP/s) |
 
 ![Comms/compute overlap](figures/comms_overlap.png)
 
-Real but **modest, growing with GPU count** — recent jaxlib already overlaps most collectives by default, so the
-residual weak-scaling gap is now mostly *fundamental* un-hideable comms, not a tuning miss.
+The improvement is small and grows with device count. Recent jaxlib already overlaps most collectives by default,
+so the remaining gap is largely the fraction of the collective that cannot be hidden rather than a tuning
+deficiency.
 
-## 5. Fault tolerance (G4 + G5)
+## 5. Fault tolerance
 
-- **G4 exact resume** — the deterministic sampler makes data order a pure function of `(seed, epoch)`, so the
-  train-step counter alone determines the resume point (no iterator blob). Cross-epoch continuity tested.
-- **G5 elastic restart** — [`elastic_launch.py`](scripts/elastic_launch.py) restarts from the last checkpoint on
-  process death; fault-injection test (crash → restart → exact resume) green.
+G4, exact resume: the data sampler is deterministic, so the example order is a pure function of `(seed, epoch)`.
+The train-step counter alone therefore fixes the resume position, and no iterator state is checkpointed.
+Cross-epoch continuity is covered by a test.
+
+G5, elastic restart: [`elastic_launch.py`](scripts/elastic_launch.py) restarts training from the last checkpoint
+when a process dies. A fault-injection test exercises the crash, restart, and exact-resume path.
 
 ## Reproduce
 
 ```bash
-# figures (from the measured numbers)
-python scripts/plot_results.py                      # → figures/*.png
-# on a GPU node:
-python scripts/profile_step_breakdown.py --variant gemma_2b --batch-size 4 --optimizer none        # step + MFU
+# figures, from the measured numbers
+python scripts/plot_results.py
+# on a GPU node
+python scripts/profile_step_breakdown.py --variant gemma_2b --batch-size 4 --optimizer none        # step and MFU
 python scripts/profile_attention.py --seqs 866 2048 4096                                            # attention ablation
 CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/profile_fsdp.py --batch-size 16                          # FSDP weak scaling
-source scripts/fsdp_xla_flags.sh && CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/profile_fsdp.py --batch-size 16  # +overlap
-# cheap-ladder tests (CPU / localhost multi-process):
+source scripts/fsdp_xla_flags.sh && CUDA_VISIBLE_DEVICES=0,1,2,3 python scripts/profile_fsdp.py --batch-size 16  # with overlap
+# cheap-ladder tests on CPU and localhost multi-process
 pytest src/openpi/training src/openpi/models/pi0_flash_test.py scripts/elastic_launch_test.py
 ```
 
-## Honest status
+## Status and limitations
 
-**Prod-quality code, not yet prod-*proven* at multi-node scale.** Validated single-node on real H100s;
-additive/non-breaking (single-host path is byte-for-byte upstream). Open items (need other resources): multi-
-**process** NCCL hung on the runpod node (env, not code); RLDS exact-resume is coarse (V1.1); no full convergence
-run yet (needs base weights + a real dataset).
+The implementation is validated on a single multi-GPU node and is additive: with a single host and no profiling
+or resume, the training path is byte-for-byte identical to upstream openpi. Three items remain. Cross-process
+NCCL collectives hung on the test node, which is consistent with an environment issue rather than a code defect,
+so multi-node training is not yet demonstrated. RLDS resume is coarse. A full convergence run has not been
+performed, since it requires base checkpoints and a real dataset.
 
 ---
 
