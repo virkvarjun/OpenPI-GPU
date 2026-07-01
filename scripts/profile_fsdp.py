@@ -86,7 +86,9 @@ def main():
             m.train()
             return nnx.value_and_grad(lambda mm: jnp.mean(mm.compute_loss(rng, obs, act, train=True)))(m)
 
-        jstep = jax.jit(step, in_shardings=(state_sharding, None, data_sh, data_sh), out_shardings=state_sharding)
+        # Inputs are already placed (params sharded via fsdp_sharding, obs/act sharded on the data axis), so jit
+        # infers the sharded computation from the committed input shardings — no explicit in/out_shardings needed.
+        jstep = jax.jit(step)
         with sharding.set_mesh(mesh):
             jax.block_until_ready(jstep(params, rng, obs, act))  # compile + warmup
             for _ in range(2):
