@@ -94,7 +94,8 @@ def build_step(variant: str = "dummy", batch_size: int = 1, optimizer: str = "ad
         args = (params, opt_state, rng, obs, act)
 
     compiled = jstep.lower(*args).compile()
-    return (lambda: jstep(*args)), compiled
+    n_params = sum(int(x.size) for x in jax.tree.leaves(params) if hasattr(x, "size"))
+    return (lambda: jstep(*args)), compiled, n_params
 
 
 def main() -> None:
@@ -122,15 +123,22 @@ def main() -> None:
     # openpi guards model fns with jaxtyping runtime checks; disable them for AOT lowering/profiling (matches
     # how training/checkpoints.py wraps jitted regions).
     with at.disable_typechecking():
-        run_step, compiled = build_step(variant=args.variant, batch_size=args.batch_size, optimizer=args.optimizer)
+        run_step, compiled, n_params = build_step(
+            variant=args.variant, batch_size=args.batch_size, optimizer=args.optimizer
+        )
         trace_dir = tempfile.mkdtemp()
         bd = attribution.attribute_step(run_step, compiled, trace_dir=trace_dir, warmup=args.warmup, iters=args.iters)
-        cost = profiling.step_cost(compiled)
     pct = bd.percentages()
 
-    # MFU from XLA-reported FLOPs / the REAL (blocked) device step time.
+    # MFU from the 6*N*D analytical estimate (fwd 2ND + bwd 4ND), NOT compiled.cost_analysis()['flops'] which
+    # under-reports FLOPs on this graph (~100x low → nonsense MFU). Standard scaling-paper formula.
+    small = args.variant == "dummy"
+    img_patches = (224 // 14) ** 2  # SigLIP: 256 patches/image
+    tokens_per_sample = 3 * img_patches + (8 if small else 48) + (4 if small else 50)  # ~3 cameras + text + action
+    n_tokens = args.batch_size * tokens_per_sample
+    flops_6nd = 6.0 * n_params * n_tokens
     dev_s = bd.device_busy_us / 1e6 / bd.n_steps
-    achieved_tflops = (cost.flops / dev_s / 1e12) if dev_s > 0 else 0.0
+    achieved_tflops = (flops_6nd / dev_s / 1e12) if dev_s > 0 else 0.0
     peak = float(os.environ["SHARDER_PEAK_FLOPS"]) if os.environ.get("SHARDER_PEAK_FLOPS") else None
     mfu = f"{achieved_tflops * 1e12 / peak * 100:.1f}%" if peak else "n/a (set SHARDER_PEAK_FLOPS)"
 
@@ -142,8 +150,8 @@ def main() -> None:
         "",
         flag,
         "",
-        f"Window: {bd.n_steps} step(s) | device time {bd.device_busy_us / 1e3 / bd.n_steps:.3f} ms/step "
-        f"| {achieved_tflops:.1f} TFLOP/s achieved | MFU {mfu}",
+        f"Window: {bd.n_steps} step(s) | device time {bd.device_busy_us / 1e3 / bd.n_steps:.3f} ms/step | "
+        f"{n_params / 1e9:.2f}B params, {n_tokens} tok/step | {achieved_tflops:.0f} TFLOP/s (6ND) | MFU {mfu}",
         "",
         "| category | device ms/step | % device |",
         "|----------|---------------:|---------:|",
