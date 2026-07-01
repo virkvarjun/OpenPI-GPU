@@ -557,6 +557,79 @@ def step(params, batch):
       </div>
     </section>
 
+    <section class="chapter" id="ch4">
+      <span class="chap-num">Part IV</span>
+      <h2>openpi and the pi0 model</h2>
+      <p>openpi trains <em>vision-language-action</em> models, or VLAs: models that take camera images and a
+        language instruction and output robot actions. The model this project profiles is <strong>pi0</strong>, a
+        flow-based VLA.</p>
+
+      <h3 id="ch4-pi0">The pi0 model</h3>
+      <p>pi0 has three parts. A <strong>SigLIP</strong> vision encoder turns each camera image into a sequence of
+        visual tokens. A <strong>Gemma</strong> language backbone, <code>gemma_2b</code> in this configuration,
+        processes the visual tokens together with the text instruction. A flow-matching <strong>action
+        expert</strong> then produces the continuous action trajectory. The Gemma backbone is where most of the
+        compute lives, and its configuration, eighteen layers of width 2048 with an MLP dimension of 16384, eight
+        query heads sharing one key/value head, and a head dimension of 256, is exactly what determines the
+        numbers later on.</p>
+      <figure>
+        <div class="svg-wrap anim">
+          <svg viewBox="0 0 620 190" role="img" aria-label="pi0 architecture: vision and text into Gemma, then a flow-matching action expert">
+            <g stroke-width="1.3">
+              <rect class="f-p2 s-a" x="24" y="40" width="110" height="40" rx="6" data-fade/>
+              <text class="t-a" x="79" y="65" text-anchor="middle" data-fade>SigLIP vision</text>
+              <rect class="f-p2 s-r" x="24" y="104" width="110" height="40" rx="6" data-fade style="transition-delay:.15s"/>
+              <text class="t-l" x="79" y="129" text-anchor="middle" data-fade style="transition-delay:.15s">text tokens</text>
+              <rect class="f-p2 s-a" x="240" y="70" width="140" height="48" rx="6" data-fade style="transition-delay:.35s"/>
+              <text class="t-a" x="310" y="90" text-anchor="middle" data-fade style="transition-delay:.35s">Gemma backbone</text>
+              <text class="t-l" x="310" y="107" text-anchor="middle" data-fade style="transition-delay:.35s">gemma_2b · 18 layers</text>
+              <rect class="f-p2 s-b" x="470" y="70" width="130" height="48" rx="6" data-fade style="transition-delay:.6s"/>
+              <text class="t-b" x="535" y="90" text-anchor="middle" data-fade style="transition-delay:.6s">action expert</text>
+              <text class="t-l" x="535" y="107" text-anchor="middle" data-fade style="transition-delay:.6s">flow matching</text>
+            </g>
+            <g class="s-a flow" stroke-width="1.1" marker-end="url(#ar2)">
+              <path d="M134 60 H236"/><path d="M134 124 C 190 124 190 100 236 98"/><path d="M380 94 H466"/>
+            </g>
+            <defs><marker id="ar2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="f-a" d="M0 0 L6 3 L0 6 Z"/></marker></defs>
+            <text class="t-l" x="535" y="150" text-anchor="middle" data-fade style="transition-delay:.8s">→ robot actions</text>
+          </svg>
+        </div>
+        <figcaption>pi0: SigLIP vision tokens and text feed the Gemma backbone; a flow-matching action expert produces the action trajectory.</figcaption>
+      </figure>
+
+      <h3 id="ch4-step">The training step</h3>
+      <p>A training step is the pure function from Part II applied to this model: run the forward pass to a
+        flow-matching loss, differentiate to get gradients, and apply the AdamW update. That single step is the
+        unit everything is measured on. Its data comes from a pipeline that loads and prepares the next batch on
+        the host CPU while the accelerator is still computing the current one, so the load is hidden behind
+        compute rather than stalling it.</p>
+      <figure>
+        <div class="svg-wrap anim">
+          <svg viewBox="0 0 620 150" role="img" aria-label="Prefetch: the host loads the next batch while the device computes the current one">
+            <text class="t-l" x="20" y="34">host (CPU)</text>
+            <g class="s-r f-p2" stroke-width="1.1" data-fade>
+              <rect x="120" y="20" width="120" height="26" rx="4"/><rect x="250" y="20" width="120" height="26" rx="4"/><rect x="380" y="20" width="120" height="26" rx="4"/>
+            </g>
+            <g class="t-l" text-anchor="middle" data-fade><text x="180" y="38">load N+1</text><text x="310" y="38">load N+2</text><text x="440" y="38">load N+3</text></g>
+            <text class="t-a" x="20" y="98">device (GPU)</text>
+            <g class="s-a f-p2" stroke-width="1.3" data-fade style="transition-delay:.3s">
+              <rect x="120" y="84" width="120" height="26" rx="4"/><rect x="250" y="84" width="120" height="26" rx="4"/><rect x="380" y="84" width="120" height="26" rx="4"/>
+            </g>
+            <g class="t-a" text-anchor="middle" data-fade style="transition-delay:.3s"><text x="180" y="102">step N</text><text x="310" y="102">step N+1</text><text x="440" y="102">step N+2</text></g>
+            <g class="s-b flow" stroke-width="1.1"><path d="M180 46 V84"/><path d="M310 46 V84"/></g>
+            <text class="t-b" x="560" y="70" text-anchor="middle">overlap</text>
+          </svg>
+        </div>
+        <figcaption>Prefetch overlaps host data loading with device compute: while the GPU runs step N, the CPU prepares batch N+1.</figcaption>
+      </figure>
+
+      <div class="drills">
+        <h4>Drills</h4>
+        <details><summary>Which part of pi0 dominates the compute, and why does it matter here?</summary>
+          <div class="ans">The Gemma backbone. Its layer shape, wide MLP and modest sequence length, is what makes the step GEMM-bound and sets both the MFU and the attention fraction measured later.</div></details>
+      </div>
+    </section>
+
     <!-- CHAPTERS-INSERT -->
 
     <section class="chapter" id="ch7">
