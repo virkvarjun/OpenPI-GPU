@@ -662,6 +662,15 @@ encoded = jax.nn.dot_product_attention(
       <p><em>Mechanism.</em> A small module reads the coordinator address, the process count, and this process's
         index from the environment and performs the handshake, and does nothing at all when there is a single
         process. The single-host path is therefore untouched.</p>
+      <pre><code class="language-python">def maybe_initialize():
+    addr = os.environ.get("JAX_COORDINATOR_ADDRESS")
+    if not addr:
+        return                              # single process: no-op, upstream path untouched
+    jax.distributed.initialize(
+        coordinator_address=addr,
+        num_processes=int(os.environ["JAX_NUM_PROCESSES"]),
+        process_id=int(os.environ["JAX_PROCESS_ID"]),
+    )                                       # now jax.device_count() spans every host</code></pre>
       <figure>
         <div class="svg-wrap anim">
           <svg viewBox="0 0 600 170" role="img" aria-label="Four separate processes fused by initialize into one program">
@@ -719,6 +728,14 @@ encoded = jax.nn.dot_product_attention(
         training state already counts steps, the resume position can be <em>derived</em> rather than stored: the
         step counter maps to an (epoch, offset), and the sampler seeks there. No iterator blob is ever
         checkpointed. A test confirms the resumed stream continues exactly, including across an epoch boundary.</p>
+      <pre><code class="language-python"># the entire "iterator state" is one integer: the step counter already in TrainState.
+def resume_position(consumed_batches, dataset_len, global_batch):
+    n = dataset_len // global_batch          # batches per epoch
+    return consumed_batches // n, consumed_batches % n   # -> (epoch, offset)
+
+# on restore: seek the deterministic sampler; no separate iterator checkpoint exists
+epoch, offset = resume_position(int(state.step), dataset_len, global_batch)
+sampler.seek(epoch, offset)</code></pre>
       <div class="callout tip">
         <span class="label">Intellectual core · derive-don't-store</span>
         <p>When order is a deterministic function of (seed, epoch), the step counter is enough to reconstruct
@@ -732,6 +749,13 @@ encoded = jax.nn.dot_product_attention(
         with a resume flag, up to a retry limit with backoff. It composes the earlier pieces: G1 brings the
         cluster back up, Orbax restores the checkpoint, and G4 seeks the data to the right step. A fault-injection
         test kills a run partway and asserts it resumes with no lost or duplicated work.</p>
+      <pre><code class="language-python">for attempt in range(max_retries + 1):
+    cmd = command + (["--resume"] if attempt else [])   # fresh start, then resume
+    rc = subprocess.run(cmd).returncode
+    if rc == 0:
+        break
+    time.sleep(backoff * 2**attempt)                    # a dead process becomes a resume
+# G1 re-inits the cluster, Orbax restores the checkpoint, G4 seeks the data to state.step</code></pre>
       <figure>
         <div class="svg-wrap anim">
           <svg viewBox="0 0 600 130" role="img" aria-label="Elastic restart loop: run, crash, relaunch, resume from checkpoint">
