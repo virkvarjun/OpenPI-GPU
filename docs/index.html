@@ -436,6 +436,127 @@ def step(params, batch):
       </div>
     </section>
 
+    <section class="chapter" id="ch3">
+      <span class="chap-num">Part III</span>
+      <h2>The mechanisms</h2>
+      <p>With the hardware and libraries in place, four mechanisms do the actual work of scaling. Each has a
+        simple picture behind it.</p>
+
+      <h3 id="ch3-mesh">The device mesh</h3>
+      <p>JAX arranges the available accelerators into a logical grid called a <em>mesh</em>, and gives its axes
+        names. Sharder uses a two-dimensional mesh with a <code>batch</code> axis and an <code>fsdp</code> axis. A
+        tensor is then sharded by declaring which of its dimensions map to which mesh axis: the data batch is
+        split along <code>batch</code>, and the model parameters are split along <code>fsdp</code>.</p>
+      <figure>
+        <div class="svg-wrap anim">
+          <svg viewBox="0 0 560 220" role="img" aria-label="Eight chips assembling into a 2 by 4 device mesh">
+            <g stroke-width="1.3">
+              <rect class="f-p2 s-a" data-move style="--from:translate(-120px,-40px)" x="120" y="40" width="70" height="52" rx="6"/>
+              <rect class="f-p2 s-a" data-move style="--from:translate(60px,-70px)" x="210" y="40" width="70" height="52" rx="6"/>
+              <rect class="f-p2 s-a" data-move style="--from:translate(-40px,-90px)" x="300" y="40" width="70" height="52" rx="6"/>
+              <rect class="f-p2 s-a" data-move style="--from:translate(140px,-30px)" x="390" y="40" width="70" height="52" rx="6"/>
+              <rect class="f-p2 s-a" data-move style="--from:translate(-120px,80px)" x="120" y="110" width="70" height="52" rx="6"/>
+              <rect class="f-p2 s-a" data-move style="--from:translate(40px,110px)" x="210" y="110" width="70" height="52" rx="6"/>
+              <rect class="f-p2 s-a" data-move style="--from:translate(-30px,120px)" x="300" y="110" width="70" height="52" rx="6"/>
+              <rect class="f-p2 s-a" data-move style="--from:translate(130px,90px)" x="390" y="110" width="70" height="52" rx="6"/>
+            </g>
+            <g class="t-l" text-anchor="middle" data-fade style="transition-delay:.9s">
+              <text x="290" y="72">chip</text><text x="290" y="142">chip</text>
+            </g>
+            <text class="t-a" x="290" y="200" text-anchor="middle" data-fade style="transition-delay:1s">fsdp axis  →  (parameters sharded)</text>
+            <text class="t-b" x="95" y="105" text-anchor="middle" transform="rotate(-90 95 105)" data-fade style="transition-delay:1s">batch axis ↑</text>
+          </svg>
+        </div>
+        <figcaption>Eight accelerators assembled into a 2×4 (batch × fsdp) mesh. Batch is split down the rows; parameters are split across the columns.</figcaption>
+      </figure>
+
+      <h3 id="ch3-fsdp">FSDP: shard, gather, compute, free, scatter</h3>
+      <p>Fully-sharded data parallelism keeps each parameter matrix split across the <code>fsdp</code> devices, so
+        no device ever holds the whole model. To run a layer, the shards are <strong>all-gathered</strong> into
+        the full matrix just in time; the matrix multiply runs; the full matrix is <strong>freed</strong>; and in
+        the backward pass the gradients are <strong>reduce-scattered</strong> back into shards. Memory stays
+        sharded, and only the one matrix currently in use is ever whole.</p>
+      <figure>
+        <div class="svg-wrap anim">
+          <svg viewBox="0 0 620 240" role="img" aria-label="One FSDP layer: gather, compute, free, reduce-scatter">
+            <g class="t-l"><text x="70" y="24">GPU0</text><text x="210" y="24">GPU1</text><text x="350" y="24">GPU2</text><text x="490" y="24">GPU3</text></g>
+            <g stroke-width="1.2" class="f-p s-r">
+              <rect x="40" y="32" width="90" height="44" rx="5"/><rect x="180" y="32" width="90" height="44" rx="5"/>
+              <rect x="320" y="32" width="90" height="44" rx="5"/><rect x="460" y="32" width="90" height="44" rx="5"/>
+            </g>
+            <g stroke-width="1.4" class="s-a f-p2">
+              <rect x="54" y="46" width="30" height="16" rx="2" data-move style="--from:translate(0,0)"/>
+              <rect x="194" y="46" width="30" height="16" rx="2" data-move style="--from:translate(-140px,0)"/>
+              <rect x="334" y="46" width="30" height="16" rx="2" data-move style="--from:translate(-280px,0)"/>
+              <rect x="474" y="46" width="30" height="16" rx="2" data-move style="--from:translate(-420px,0)"/>
+            </g>
+            <g class="s-a flow" stroke-width="1.1"><path d="M85 76 V120 H300"/><path d="M225 76 V120"/><path d="M365 76 V120"/><path d="M505 76 V120 H300"/></g>
+            <rect class="f-p2 s-a" x="230" y="120" width="140" height="30" rx="5" stroke-width="1.4" data-fade style="transition-delay:.6s"/>
+            <text class="t-a" x="300" y="140" text-anchor="middle" data-fade style="transition-delay:.6s">full weight (gathered)</text>
+            <rect class="f-p2 s-b" x="250" y="172" width="100" height="30" rx="5" stroke-width="1.4" data-fade style="transition-delay:.9s"/>
+            <text class="t-b" x="300" y="192" text-anchor="middle" data-fade style="transition-delay:.9s">matmul</text>
+            <path class="s-a" data-draw style="--len:26" stroke-width="1.2" d="M300 150 V172"/>
+            <text class="t-l" x="392" y="164" data-fade style="transition-delay:1.1s">grads reduce-scatter ↑</text>
+          </svg>
+        </div>
+        <figcaption>One layer of FSDP: shards all-gather into the full weight, the matmul runs, the full weight is freed, and gradients reduce-scatter back. Whether the gather hides behind the matmul sets the scaling efficiency.</figcaption>
+      </figure>
+
+      <h3 id="ch3-shard">Data sharding, and why it must be exact</h3>
+      <p>When several processes train together, each reads a different slice of the data. The naive way, hand each
+        process every N-th example, changes which examples land in each step compared to a single-process run. For
+        a portfolio-grade contribution that is not good enough: the multi-process run should produce
+        <em>bit-identical</em> loss and gradients to the single-process baseline, so nothing about correctness
+        depends on the device count.</p>
+      <p>Sharder's sampler shards <em>within</em> each global batch. Every process takes a contiguous slice of the
+        same deterministic global order, and concatenating those slices in process order reconstructs exactly the
+        batch a single process would have formed.</p>
+      <figure>
+        <div class="svg-wrap anim">
+          <svg viewBox="0 0 620 210" role="img" aria-label="Within-batch sharding reconstructs the single-process batch; naive striping does not">
+            <text class="t-l" x="20" y="24">single-process global batch</text>
+            <g data-fade>
+              <g class="f-p2 s-r" stroke-width="1">
+                <rect x="20" y="32" width="42" height="26" rx="3"/><rect x="64" y="32" width="42" height="26" rx="3"/><rect x="108" y="32" width="42" height="26" rx="3"/><rect x="152" y="32" width="42" height="26" rx="3"/><rect x="196" y="32" width="42" height="26" rx="3"/><rect x="240" y="32" width="42" height="26" rx="3"/><rect x="284" y="32" width="42" height="26" rx="3"/><rect x="328" y="32" width="42" height="26" rx="3"/>
+              </g>
+              <g class="t-l" text-anchor="middle"><text x="41" y="50">0</text><text x="85" y="50">1</text><text x="129" y="50">2</text><text x="173" y="50">3</text><text x="217" y="50">4</text><text x="261" y="50">5</text><text x="305" y="50">6</text><text x="349" y="50">7</text></g>
+            </g>
+            <!-- ours -->
+            <text class="t-a" x="20" y="98">within-batch (ours)</text>
+            <g class="s-a" stroke-width="1.3" fill="none" data-fade style="transition-delay:.3s"><rect x="20" y="106" width="180" height="30" rx="4"/><rect x="204" y="106" width="180" height="30" rx="4"/></g>
+            <g class="t-a" text-anchor="middle" data-fade style="transition-delay:.3s"><text x="110" y="125">P0 : 0 1 2 3</text><text x="294" y="125">P1 : 4 5 6 7</text></g>
+            <text class="t-a" x="404" y="125" data-fade style="transition-delay:.5s">→ 0 1 2 3 4 5 6 7  ✓ identical</text>
+            <!-- naive -->
+            <text class="t-b" x="20" y="170">naive stripe</text>
+            <g class="s-b" stroke-width="1.3" fill="none" data-fade style="transition-delay:.6s"><rect x="20" y="178" width="180" height="24" rx="4"/><rect x="204" y="178" width="180" height="24" rx="4"/></g>
+            <g class="t-b" text-anchor="middle" data-fade style="transition-delay:.6s"><text x="110" y="195">P0 : 0 2 4 6</text><text x="294" y="195">P1 : 1 3 5 7</text></g>
+            <text class="t-b" x="404" y="195" data-fade style="transition-delay:.8s">→ 0 2 4 6 1 3 5 7  ✗ different</text>
+          </svg>
+        </div>
+        <figcaption>Within-batch sharding reconstructs the single-process batch exactly, giving bit-identical training; naive striping reorders it, and parity is lost.</figcaption>
+      </figure>
+      <div class="callout tip">
+        <span class="label">Key idea</span>
+        <p>Sharding within each global batch is what buys bit-precise parity between the multi-process and
+          single-process runs. Correctness becomes independent of how many devices you train on.</p>
+      </div>
+
+      <h3 id="ch3-flash">FlashAttention</h3>
+      <p>Attention compares every token to every other token, forming a score matrix of size sequence × sequence.
+        The naive implementation writes that whole matrix to memory, so its memory grows with the
+        <em>square</em> of the sequence length. FlashAttention computes the same result by streaming the matrix in
+        tiles and never storing it whole, which makes it faster and, more importantly, keeps its memory flat as
+        the sequence grows. Part VI shows how decisive that becomes at longer context.</p>
+
+      <div class="drills">
+        <h4>Drills</h4>
+        <details><summary>In FSDP, what is ever held in full, and what stays sharded?</summary>
+          <div class="ans">Only the single weight matrix currently being multiplied is gathered in full; every other parameter, and the parameters after the matmul frees them, stays sharded across the fsdp devices.</div></details>
+        <details><summary>Why is within-batch sharding preferable to striping the dataset?</summary>
+          <div class="ans">Because concatenating the per-process slices reproduces the exact single-process batch, so the loss and gradients match bit-for-bit. Striping changes each step's batch composition and breaks that parity.</div></details>
+      </div>
+    </section>
+
     <!-- CHAPTERS-INSERT -->
 
     <section class="chapter" id="ch7">
