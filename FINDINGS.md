@@ -56,6 +56,24 @@ longer context.
 **Verdict:** enable `use_flash_attention=True` — free 9.3% + memory now, and the key unlock for longer context.
 The compute is still GEMM-dominated (matmul-FFN ~58%), so scale-out (FSDP) remains the main throughput lever.
 
+## Comms/compute overlap — attempted, INCONCLUSIVE (node released mid-run)
+
+The weak-scaling residual (device time grows 195→275 ms; ~30% of ideal lost) is FSDP all-gather/reduce-scatter
+not hidden behind compute. The fix is XLA's latency-hiding scheduler + pipelined async collectives + large
+combine thresholds (`scripts/fsdp_xla_flags.sh`). BEFORE/AFTER weak-scaling sweep (2 & 4 GPU, default vs tuned):
+only the first cell completed before the H100 node was released —
+
+| config | device ms/step | per-GPU MFU |
+|---|---:|---:|
+| 2-GPU, default flags | 232.4 | 29.2% |
+| 2-GPU, tuned flags | *(not captured — node released)* | |
+| 4-GPU, default / tuned | *(not captured)* | |
+
+**Status: PENDING RE-RUN.** The 2-GPU default (232 ms / 29.2%) is consistent with the earlier weak-scaling point
+(~250 ms / 27%); the tuned-vs-default delta — the actual overlap win — was not measured. Reproduce with
+`source scripts/fsdp_xla_flags.sh` then the weak-scaling sweep. Honest note: recent jaxlib enables some overlap
+by default, so the tuned gain may be modest; this must be measured, not assumed.
+
 ## FSDP strong scaling (fixed global batch 4, fwd+bwd, `sharding.fsdp_sharding` across N GPUs)
 
 | GPUs | device ms/step | speedup | aggregate TFLOP/s | per-GPU MFU |
