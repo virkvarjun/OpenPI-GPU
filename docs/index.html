@@ -8,9 +8,9 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css" />
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%231f7a5a'/%3E%3Ctext x='12' y='17' font-size='13' fill='%23f6f3ec' font-family='monospace' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-light.min.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%232d5a3d'/%3E%3Ctext x='12' y='17' font-size='13' fill='%23faf8f5' font-family='monospace' text-anchor='middle'%3ES%3C/text%3E%3C/svg%3E" />
 
 <script>
 window.MathJax = { tex:{ inlineMath:[['\\(','\\)']], displayMath:[['$$','$$']] }, svg:{ fontCache:'global' } };
@@ -19,16 +19,17 @@ window.MathJax = { tex:{ inlineMath:[['\\(','\\)']], displayMath:[['$$','$$']] }
 
 <style>
 :root{
-  --paper:#f6f3ec; --paper-2:#efeadf; --ink:#1f2421; --ink-soft:#454d47;
-  --rule:#d8d1c2; --accent:#1f7a5a; --accent-2:#c2611f; --code-bg:#21252b;
-  --accent-soft:rgba(31,122,90,.10); --amber-soft:rgba(194,97,31,.10);
-  --maxcol:840px; --sidebar:288px;
+  --paper:#faf8f5; --paper-2:#f2eee5; --ink:#1a1a1a; --ink-soft:#5a5a5a;
+  --rule:#e5e1d6; --rule-strong:#d6d1c4; --accent:#2d5a3d; --accent-2:#9c5a32; --code-bg:#f2efe7;
+  --accent-soft:rgba(45,90,61,.09); --amber-soft:rgba(156,90,50,.09);
+  --maxcol:760px; --sidebar:272px;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0; background:var(--paper); color:var(--ink);
-  font-family:"Newsreader",Georgia,serif; font-size:19px; line-height:1.62;
-  font-optical-sizing:auto; -webkit-font-smoothing:antialiased;}
+  font-family:"Source Serif 4",Georgia,serif; font-size:17px; line-height:1.6;
+  font-optical-sizing:auto; -webkit-font-smoothing:antialiased; font-feature-settings:'onum';
+  counter-reset:figc snc;}
 
 #progress{position:fixed; top:0; left:0; height:3px; width:0%;
   background:linear-gradient(90deg,var(--accent),var(--accent-2)); z-index:60; transition:width .08s linear;}
@@ -39,7 +40,7 @@ body{margin:0; background:var(--paper); color:var(--ink);
 .content{padding:64px clamp(20px,5vw,72px) 140px; min-width:0;}
 .col{max-width:var(--maxcol); margin:0 auto;}
 
-.brand{font-family:"Fraunces",serif; font-weight:600; font-size:18px; line-height:1.2; letter-spacing:-.01em;}
+.brand{font-family:"Inter",system-ui,sans-serif; font-weight:600; font-size:18px; line-height:1.2; letter-spacing:-.01em;}
 .brand small{display:block; font-family:"JetBrains Mono",monospace; font-weight:400;
   font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-soft); margin-top:8px;}
 .toc{margin-top:26px; font-family:"JetBrains Mono",monospace; font-size:12.5px;}
@@ -61,13 +62,13 @@ body{margin:0; background:var(--paper); color:var(--ink);
 
 .doc-head{border-bottom:1px solid var(--rule); padding-bottom:30px; margin-bottom:14px;}
 .kicker{font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--accent); font-weight:600;}
-h1.title{font-family:"Fraunces",serif; font-weight:600; font-size:clamp(34px,5vw,52px); line-height:1.04; letter-spacing:-.02em; margin:16px 0 0;}
+h1.title{font-family:"Inter",system-ui,sans-serif; font-weight:600; font-size:clamp(34px,5vw,52px); line-height:1.04; letter-spacing:-.02em; margin:16px 0 0;}
 .subtitle{font-size:21px; color:var(--ink-soft); margin:18px 0 0; max-width:36em; font-style:italic;}
 .byline{font-family:"JetBrains Mono",monospace; font-size:11.5px; letter-spacing:.06em; color:var(--ink-soft); margin-top:22px;}
 .byline a{color:var(--accent);}
 
-.content h2{font-family:"Fraunces",serif; font-weight:600; font-size:clamp(26px,3.4vw,34px); letter-spacing:-.015em; line-height:1.12; margin:0 0 6px; scroll-margin-top:22px;}
-.content h3{font-family:"Fraunces",serif; font-weight:600; font-size:21px; letter-spacing:-.01em; margin:42px 0 2px; scroll-margin-top:22px;}
+.content h2{font-family:"Inter",system-ui,sans-serif; font-weight:600; font-size:clamp(26px,3.4vw,34px); letter-spacing:-.015em; line-height:1.12; margin:0 0 6px; scroll-margin-top:22px;}
+.content h3{font-family:"Inter",system-ui,sans-serif; font-weight:600; font-size:21px; letter-spacing:-.01em; margin:42px 0 2px; scroll-margin-top:22px;}
 .chap-num{font-family:"JetBrains Mono",monospace; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); font-weight:600; display:block; margin-bottom:6px;}
 section.chapter{padding-top:64px; border-top:1px solid var(--rule); margin-top:60px;}
 section.chapter:first-of-type{border-top:none;}
@@ -77,11 +78,11 @@ strong{font-weight:600; color:var(--ink);}
 em{font-style:italic;}
 ul,ol.body{padding-left:1.3rem;} li{margin:8px 0;}
 
-pre{background:var(--code-bg); border-radius:10px; padding:16px 18px; overflow-x:auto;
-  margin:24px 0; font-size:13.5px; line-height:1.55; border:1px solid #2c313a;}
-pre code{font-family:"JetBrains Mono",monospace; background:none; padding:0; color:#abb2bf; font-size:13.5px;}
-code{font-family:"JetBrains Mono",monospace; background:var(--paper-2); font-size:.82em; padding:.08em .34em; border-radius:4px; color:var(--ink);}
-pre code.hljs{padding:0;}
+pre{background:var(--code-bg); border-radius:6px; padding:15px 17px; overflow-x:auto;
+  margin:24px 0; font-size:13px; line-height:1.55; border:1px solid var(--rule);}
+pre code{font-family:"JetBrains Mono",monospace; background:none; padding:0; color:var(--ink); font-size:13px;}
+code{font-family:"JetBrains Mono",monospace; background:var(--paper-2); font-size:.84em; padding:.08em .34em; border-radius:4px; color:var(--ink);}
+pre code.hljs{padding:0; background:none;}
 
 .callout{margin:26px 0; padding:16px 20px 16px 18px; border-radius:10px; border:1px solid var(--rule); background:var(--paper-2); font-size:17px; line-height:1.55;}
 .callout .label{font-family:"JetBrains Mono",monospace; font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; font-weight:600; display:block; margin-bottom:6px; color:var(--ink-soft);}
@@ -94,12 +95,24 @@ pre code.hljs{padding:0;}
 .aside{font-size:16.5px; color:var(--ink-soft); border-left:2px solid var(--accent-2); padding:2px 0 2px 16px; margin:22px 0; font-style:italic;}
 .aside b,.aside strong{font-style:normal;}
 
-figure{margin:34px 0; text-align:center;}
+figure{margin:34px 0; text-align:center; counter-increment:figc;}
 figure img,figure svg{max-width:100%; height:auto; display:block; margin:0 auto;}
-figcaption{font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.04em; color:var(--ink-soft); margin-top:12px; text-align:center; line-height:1.5;}
-.svg-wrap{background:var(--paper-2); border:1px solid var(--rule); border-radius:12px; padding:22px 18px;}
-figure img{border:1px solid var(--rule); border-radius:10px; background:#fff;}
+figcaption{font-family:"Source Serif 4",Georgia,serif; font-size:13.5px; color:var(--ink-soft); margin-top:14px; text-align:center; line-height:1.5;}
+figcaption::before{content:"Figure " counter(figc) ". "; font-family:"Inter",sans-serif; font-weight:600; color:var(--ink);}
+.svg-wrap{background:var(--paper); border:1px solid var(--rule); border-radius:6px; padding:24px 20px;
+  background-image:linear-gradient(var(--rule) 1px,transparent 1px),linear-gradient(90deg,var(--rule) 1px,transparent 1px);
+  background-size:22px 22px; background-position:center; opacity:1;}
+.svg-wrap svg{background:transparent;}
+figure img{border:1px solid var(--rule); border-radius:6px; background:var(--paper);}
 text{font-family:"JetBrains Mono",monospace;}
+/* sidenotes — numbered, reveal on hover/tap */
+.sn{counter-increment:snc; position:relative; cursor:pointer;}
+.sn::after{content:counter(snc); font-family:"Inter",sans-serif; font-weight:600; font-size:.62em; vertical-align:super; line-height:0; color:var(--accent); padding:0 .12em;}
+.sn > span{display:none; position:absolute; bottom:1.5em; left:50%; transform:translateX(-50%); width:min(300px,78vw);
+  background:var(--paper); border:1px solid var(--rule); border-radius:5px; padding:.55rem .7rem;
+  font-family:"Source Serif 4",serif; font-weight:400; font-style:normal; font-size:13.5px; line-height:1.5;
+  color:var(--ink-soft); text-align:left; z-index:30; box-shadow:0 6px 20px -10px rgba(0,0,0,.25);}
+.sn:hover > span, .sn:focus-within > span{display:block;}
 
 .tbl{width:100%; border-collapse:collapse; margin:26px 0; font-size:15.5px;}
 .tbl th,.tbl td{text-align:left; padding:9px 12px; border-bottom:1px solid var(--rule); vertical-align:top;}
@@ -771,18 +784,18 @@ def step(params, batch):
           <tr><td>weak · aggregate</td><td>344</td><td>539</td><td>980 TFLOP/s</td></tr>
         </tbody>
       </table>
-      <figure><img src="figures/fsdp_scaling_time.png" alt="FSDP step time: strong scaling drops while weak scaling rises slightly with GPU count" loading="lazy" />
+      <figure><div class="svg-wrap anim"><div id="chartScaling" class="chart"></div></div>
         <figcaption>FSDP step time. Strong scaling collapses to one sample per GPU; weak scaling stays near the ideal flat line.</figcaption></figure>
       <p>Under strong scaling, four GPUs means one sample per GPU, the parameter all-gather dominates, and per-GPU
         MFU falls to 12.5%. Weak scaling keeps every device fed and reaches <strong>2.85× on four GPUs</strong>,
         980 TFLOP/s at 24.8% MFU, against strong scaling's 1.44×.</p>
-      <figure><img src="figures/fsdp_scaling_throughput.png" alt="Aggregate throughput: weak scaling rises toward but below the ideal linear line" loading="lazy" />
+      <figure><div class="svg-wrap anim"><div id="chartTput" class="chart"></div></div>
         <figcaption>Aggregate throughput. Weak scaling climbs to 980 TFLOP/s, below the ideal linear line by the un-hidden communication.</figcaption></figure>
       <p>The gap from ideal is FSDP communication that does not overlap compute. Tuning XLA's overlap flags
         recovers a little of it, <strong>+2.3%</strong> at two GPUs and <strong>+3.9%</strong> at four, growing
         with device count. Recent compilers already overlap most collectives, so the remainder is largely
         communication that cannot be hidden rather than a tuning miss.</p>
-      <figure><img src="figures/comms_overlap.png" alt="Default versus tuned overlap flags: small gains that grow with GPU count" loading="lazy" />
+      <figure><div class="svg-wrap anim"><div id="chartOverlap" class="chart"></div></div>
         <figcaption>Comms/compute overlap: tuned XLA flags versus defaults, a small gain that grows with GPU count.</figcaption></figure>
 
       <h3 id="ch6-attn">Attention scales as sequence squared</h3>
@@ -808,7 +821,7 @@ def step(params, batch):
         </div>
         <figcaption>Attention as a fraction of the step: 4.7% at 866 tokens, 22% at 2048, 86% at 4096. Each doubling of sequence roughly quadruples the area.</figcaption>
       </figure>
-      <figure><img src="figures/attention_vs_seq.png" alt="Attention percent of step by sequence length, naive versus flash" loading="lazy" />
+      <figure><div class="svg-wrap anim"><div id="chartAttn" class="chart"></div></div>
         <figcaption>Measured attention fraction, naive against FlashAttention, across sequence lengths.</figcaption></figure>
       <div class="callout tip">
         <span class="label">Why this matters</span>
@@ -816,7 +829,7 @@ def step(params, batch):
           longer horizons, attention becomes the majority of the step and its flat memory becomes essential.
           FlashAttention is the unlock for that regime, which is why it ships on by default now.</p>
       </div>
-      <figure><img src="figures/flash_end_to_end.png" alt="FlashAttention end to end: naive versus flash step time and MFU" loading="lazy" />
+      <figure><div class="svg-wrap anim"><div id="chartFlash" class="chart"></div></div>
         <figcaption>FlashAttention end to end on gemma_2b: 195.9 to 177.6 ms, MFU 34.7 to 38.3%, a 9.3% reduction, bit-identical loss.</figcaption></figure>
 
       <h3 id="ch6-limits">Honest limitations</h3>
@@ -901,6 +914,55 @@ const sb=document.getElementById('sidebar'),scrim=document.getElementById('scrim
 document.getElementById('menuToggle').addEventListener('click',()=>{sb.classList.toggle('open');scrim.classList.toggle('show');});
 scrim.addEventListener('click',()=>{sb.classList.remove('open');scrim.classList.remove('show');});
 document.querySelectorAll('.toc a').forEach(a=>a.addEventListener('click',()=>{if(window.innerWidth<=900){sb.classList.remove('open');scrim.classList.remove('show');}}));
+
+/* ---- native line-art charts (replace the PNGs), styled from theme tokens ---- */
+const NS='http://www.w3.org/2000/svg';
+const cv=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function E(t,a){const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;}
+function mount(id,w,h){const host=document.getElementById(id);if(!host)return null;host.innerHTML='';
+  const s=E('svg',{viewBox:`0 0 ${w} ${h}`,role:'img'});host.appendChild(s);return s;}
+function txt(s,x,y,str,{anchor='middle',cls='',size=10.5,fill}={}){const t=E('text',{x,y,'text-anchor':anchor});
+  t.setAttribute('font-family','JetBrains Mono, monospace');t.setAttribute('font-size',size);t.setAttribute('fill',fill||cv('--ink-soft'));t.textContent=str;s.appendChild(t);return t;}
+
+function lineChart(id,cats,series,max,unit){
+  const w=560,h=210,pl=42,pb=30,pt=14,pr=70,s=mount(id,w,h);if(!s)return;
+  const X=i=>pl+(w-pl-pr)*(i/(cats.length-1)),Y=v=>(h-pb)-(v/max)*(h-pb-pt);
+  s.appendChild(E('line',{x1:pl,y1:h-pb,x2:w-pr,y2:h-pb,stroke:cv('--rule-strong'),'stroke-width':1}));
+  s.appendChild(E('line',{x1:pl,y1:pt,x2:pl,y2:h-pb,stroke:cv('--rule-strong'),'stroke-width':1}));
+  for(let v=0;v<=max;v+=max/3){txt(s,pl-7,Y(v)+3,Math.round(v),{anchor:'end'});}
+  series.forEach(se=>{let d='';se.data.forEach((v,i)=>d+=(i?'L':'M')+X(i)+' '+Y(v)+' ');
+    const p=E('path',{d,fill:'none',stroke:se.color,'stroke-width':1.8});
+    if(se.dash){p.setAttribute('stroke-dasharray','5 4');}else{p.setAttribute('data-draw','');p.setAttribute('style','--len:640');}
+    s.appendChild(p);
+    se.data.forEach((v,i)=>{s.appendChild(E('circle',{cx:X(i),cy:Y(v),r:3,fill:se.color}));txt(s,X(i),Y(v)-8,v+(unit||''),{fill:cv('--ink')});});
+    txt(s,X(cats.length-1)+8,Y(se.data[se.data.length-1])+3,se.label,{anchor:'start',fill:se.color});});
+  cats.forEach((c,i)=>txt(s,X(i),h-9,c));
+}
+function barChart(id,cats,series,max,unit){
+  const w=560,h=210,pl=42,pb=32,pt=14,pr=14,s=mount(id,w,h);if(!s)return;
+  const bw=(w-pl-pr)/cats.length,Y=v=>(h-pb)-(v/max)*(h-pb-pt);
+  s.appendChild(E('line',{x1:pl,y1:h-pb,x2:w-pr,y2:h-pb,stroke:cv('--rule-strong'),'stroke-width':1}));
+  for(let v=0;v<=max;v+=max/4){s.appendChild(E('line',{x1:pl,y1:Y(v),x2:w-pr,y2:Y(v),stroke:cv('--rule'),'stroke-width':.5}));txt(s,pl-7,Y(v)+3,Math.round(v)+(unit==='%'?'%':''),{anchor:'end'});}
+  cats.forEach((c,i)=>{const gx=pl+i*bw,n=series.length,iw=Math.min(30,(bw-16)/n),x0=gx+(bw-n*iw-(n-1)*6)/2;
+    series.forEach((se,j)=>{const v=se.data[i],bh=Math.max(1,(v/max)*(h-pb-pt)),x=x0+j*(iw+6);
+      const r=E('rect',{x,y:h-pb-bh,width:iw,height:bh,rx:2,fill:se.color,'data-fade':''});if(se.faint)r.setAttribute('opacity','.32');s.appendChild(r);
+      txt(s,x+iw/2,h-pb-bh-4,v+(unit||''),{fill:cv('--ink'),size:9.5});});
+    txt(s,gx+bw/2,h-11,c);});
+  series.forEach((se,j)=>txt(s,pl+j*84,pt+2,'■ '+se.label,{anchor:'start',fill:se.color,size:9.5}));
+}
+const G=cv('--accent'),CLAY=cv('--accent-2'),FAINT=cv('--rule-strong');
+lineChart('chartScaling',['1 GPU','2 GPU','4 GPU'],
+  [{data:[195.6,169.3,135.5],color:CLAY,dash:true,label:'strong'},{data:[195.5,249.9,274.6],color:G,label:'weak'}],300,'');
+barChart('chartTput',['1','2','4'],
+  [{data:[344,688,1376],color:FAINT,faint:true,label:'ideal'},{data:[344,539,980],color:G,label:'weak'}],1400,'');
+barChart('chartOverlap',['2 GPU','4 GPU'],
+  [{data:[232.3,255.9],color:FAINT,faint:true,label:'default'},{data:[227.0,246.0],color:G,label:'tuned'}],300,'');
+barChart('chartAttn',['866','2048','4096'],
+  [{data:[4.7,22,86],color:CLAY,label:'naive'},{data:[2.4,8.3,30],color:G,label:'flash'}],100,'%');
+barChart('chartFlash',['naive','flash'],
+  [{data:[195.9,177.6],color:G,label:'ms/step'}],230,'');
+document.querySelectorAll('#chartFlash rect').forEach((r,i)=>{if(i===0)r.setAttribute('fill',FAINT);});
+document.querySelectorAll('.chart svg').forEach(s=>s.parentElement.classList.add('svg-wrap-inner'));
 </script>
 </body>
 </html>
