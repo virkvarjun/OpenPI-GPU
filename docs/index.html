@@ -641,24 +641,32 @@ encoded = jax.nn.dot_product_attention(
         numbers later on.</p>
       <figure>
         <div class="svg-wrap anim">
-          <svg viewBox="0 0 620 190" role="img" aria-label="pi0 architecture: vision and text into Gemma, then a flow-matching action expert">
-            <g stroke-width="1.3">
-              <rect class="f-p2 s-a" x="24" y="40" width="110" height="40" rx="6" data-fade/>
-              <text class="t-a" x="79" y="65" text-anchor="middle" data-fade>SigLIP vision</text>
-              <rect class="f-p2 s-r" x="24" y="104" width="110" height="40" rx="6" data-fade style="transition-delay:.15s"/>
-              <text class="t-l" x="79" y="129" text-anchor="middle" data-fade style="transition-delay:.15s">text tokens</text>
-              <rect class="f-p2 s-a" x="240" y="70" width="140" height="48" rx="6" data-fade style="transition-delay:.35s"/>
-              <text class="t-a" x="310" y="90" text-anchor="middle" data-fade style="transition-delay:.35s">Gemma backbone</text>
-              <text class="t-l" x="310" y="107" text-anchor="middle" data-fade style="transition-delay:.35s">gemma_2b · 18 layers</text>
-              <rect class="f-p2 s-b" x="470" y="70" width="130" height="48" rx="6" data-fade style="transition-delay:.6s"/>
-              <text class="t-b" x="535" y="90" text-anchor="middle" data-fade style="transition-delay:.6s">action expert</text>
-              <text class="t-l" x="535" y="107" text-anchor="middle" data-fade style="transition-delay:.6s">flow matching</text>
+          <svg viewBox="0 0 620 196" role="img" aria-label="pi0 architecture: vision and text into Gemma, then a flow-matching action expert">
+            <g data-fade>
+              <rect class="box-a" x="22" y="34" width="128" height="46" rx="7"/>
+              <text class="t-h" x="86" y="55" text-anchor="middle">SigLIP vision</text>
+              <text class="t-dim" x="86" y="70" text-anchor="middle">3 cams · 3×256 tok</text>
             </g>
-            <g class="s-a flow" stroke-width="1.1" marker-end="url(#ar2)">
-              <path d="M134 60 H236"/><path d="M134 124 C 190 124 190 100 236 98"/><path d="M380 94 H466"/>
+            <g data-fade style="transition-delay:.12s">
+              <rect class="box" x="22" y="104" width="128" height="46" rx="7"/>
+              <text class="t-h" x="86" y="125" text-anchor="middle">text prompt</text>
+              <text class="t-dim" x="86" y="140" text-anchor="middle">48 tok</text>
             </g>
-            <defs><marker id="ar2" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="f-a" d="M0 0 L6 3 L0 6 Z"/></marker></defs>
-            <text class="t-l" x="535" y="150" text-anchor="middle" data-fade style="transition-delay:.8s">→ robot actions</text>
+            <g data-fade style="transition-delay:.3s">
+              <rect class="box-a" x="232" y="62" width="158" height="58" rx="7"/>
+              <text class="t-h" x="311" y="86" text-anchor="middle">Gemma backbone</text>
+              <text class="t-dim" x="311" y="104" text-anchor="middle">gemma_2b · 18L · d=2048</text>
+            </g>
+            <g data-fade style="transition-delay:.52s">
+              <rect class="box-b" x="462" y="62" width="140" height="58" rx="7"/>
+              <text class="t-h" x="532" y="86" text-anchor="middle" fill="var(--accent-2)">action expert</text>
+              <text class="t-dim" x="532" y="104" text-anchor="middle">flow matching · 50 acts</text>
+            </g>
+            <g class="s-a" stroke-width="1.4" fill="none" marker-end="url(#arw)" data-fade style="transition-delay:.62s">
+              <path d="M150 57 H228"/><path d="M150 127 C 195 127 200 96 228 94"/><path class="s-b" d="M390 91 H458"/>
+            </g>
+            <g data-fade style="transition-delay:.72s"><path class="s-b" stroke-width="1.4" fill="none" marker-end="url(#arw)" d="M532 120 V150"/>
+              <text class="t-dim" x="532" y="168" text-anchor="middle" fill="var(--accent-2)">robot action trajectory</text></g>
           </svg>
         </div>
         <figcaption>pi0: SigLIP vision tokens and text feed the Gemma backbone; a flow-matching action expert produces the action trajectory.</figcaption>
@@ -673,18 +681,15 @@ encoded = jax.nn.dot_product_attention(
       <figure>
         <div class="svg-wrap anim">
           <svg viewBox="0 0 620 150" role="img" aria-label="Prefetch: the host loads the next batch while the device computes the current one">
-            <text class="t-l" x="20" y="34">host (CPU)</text>
-            <g class="s-r f-p2" stroke-width="1.1" data-fade>
-              <rect x="120" y="20" width="120" height="26" rx="4"/><rect x="250" y="20" width="120" height="26" rx="4"/><rect x="380" y="20" width="120" height="26" rx="4"/>
-            </g>
-            <g class="t-l" text-anchor="middle" data-fade><text x="180" y="38">load N+1</text><text x="310" y="38">load N+2</text><text x="440" y="38">load N+3</text></g>
-            <text class="t-a" x="20" y="98">device (GPU)</text>
-            <g class="s-a f-p2" stroke-width="1.3" data-fade style="transition-delay:.3s">
-              <rect x="120" y="84" width="120" height="26" rx="4"/><rect x="250" y="84" width="120" height="26" rx="4"/><rect x="380" y="84" width="120" height="26" rx="4"/>
-            </g>
-            <g class="t-a" text-anchor="middle" data-fade style="transition-delay:.3s"><text x="180" y="102">step N</text><text x="310" y="102">step N+1</text><text x="440" y="102">step N+2</text></g>
-            <g class="s-b flow" stroke-width="1.1"><path d="M180 46 V84"/><path d="M310 46 V84"/></g>
-            <text class="t-b" x="560" y="70" text-anchor="middle">overlap</text>
+            <text class="t-dim" x="20" y="37">host · CPU</text>
+            <g data-fade><rect class="box" x="118" y="20" width="122" height="28" rx="5"/><rect class="box" x="250" y="20" width="122" height="28" rx="5"/><rect class="box" x="382" y="20" width="122" height="28" rx="5"/></g>
+            <g class="t-h" text-anchor="middle" font-size="11.5" data-fade><text x="179" y="38">load N+1</text><text x="311" y="38">load N+2</text><text x="443" y="38">load N+3</text></g>
+            <text class="t-dim" x="20" y="103" fill="var(--accent)">device · GPU</text>
+            <g data-fade style="transition-delay:.25s"><rect class="box-a" x="118" y="84" width="122" height="28" rx="5"/><rect class="box-a" x="250" y="84" width="122" height="28" rx="5"/><rect class="box-a" x="382" y="84" width="122" height="28" rx="5"/></g>
+            <g class="t-h" text-anchor="middle" font-size="11.5" data-fade style="transition-delay:.25s"><text x="179" y="102">step N</text><text x="311" y="102">step N+1</text><text x="443" y="102">step N+2</text></g>
+            <g class="s-b" stroke-width="1.3" fill="none" marker-end="url(#arw)"><path d="M179 50 V82"/><path d="M311 50 V82"/></g>
+            <text class="t-dim" x="545" y="70" text-anchor="middle" fill="var(--accent-2)">load N+1 hidden</text>
+            <text class="t-dim" x="545" y="84" text-anchor="middle" fill="var(--accent-2)">behind step N</text>
           </svg>
         </div>
         <figcaption>Prefetch overlaps host data loading with device compute: while the GPU runs step N, the CPU prepares batch N+1.</figcaption>
@@ -722,16 +727,13 @@ encoded = jax.nn.dot_product_attention(
     )                                       # now jax.device_count() spans every host</code></pre>
       <figure>
         <div class="svg-wrap anim">
-          <svg viewBox="0 0 600 170" role="img" aria-label="Four separate processes fused by initialize into one program">
-            <g stroke-width="1.3" class="f-p2 s-r">
-              <rect x="30" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-30px)"/>
-              <rect x="170" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-50px)"/>
-              <rect x="340" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-50px)"/>
-              <rect x="480" y="40" width="90" height="44" rx="6" data-move style="--from:translate(0,-30px)"/>
-            </g>
-            <g class="t-l" text-anchor="middle"><text x="75" y="66">proc 0</text><text x="215" y="66">proc 1</text><text x="385" y="66">proc 2</text><text x="525" y="66">proc 3</text></g>
-            <rect class="s-a" x="20" y="30" width="560" height="64" rx="10" fill="none" stroke-width="1.6" data-draw style="--len:1250"/>
-            <text class="t-a" x="300" y="128" text-anchor="middle" data-fade style="transition-delay:1s">initialize() → one program, one global device set</text>
+          <svg viewBox="0 0 600 172" role="img" aria-label="Four separate processes fused by initialize into one program">
+            <rect class="s-a" x="18" y="30" width="564" height="70" rx="12" fill="var(--accent-soft)" stroke-width="1.6" data-draw style="--len:1270"/>
+            <g data-move style="--from:translate(0,-34px)"><rect class="box" x="34" y="44" width="112" height="46" rx="7"/><text class="t-h" x="90" y="66" text-anchor="middle">proc 0</text><text class="t-dim" x="90" y="81" text-anchor="middle">GPU 0</text></g>
+            <g data-move style="--from:translate(0,-52px)"><rect class="box" x="172" y="44" width="112" height="46" rx="7"/><text class="t-h" x="228" y="66" text-anchor="middle">proc 1</text><text class="t-dim" x="228" y="81" text-anchor="middle">GPU 1</text></g>
+            <g data-move style="--from:translate(0,-52px)"><rect class="box" x="316" y="44" width="112" height="46" rx="7"/><text class="t-h" x="372" y="66" text-anchor="middle">proc 2</text><text class="t-dim" x="372" y="81" text-anchor="middle">GPU 2</text></g>
+            <g data-move style="--from:translate(0,-34px)"><rect class="box" x="454" y="44" width="112" height="46" rx="7"/><text class="t-h" x="510" y="66" text-anchor="middle">proc 3</text><text class="t-dim" x="510" y="81" text-anchor="middle">GPU 3</text></g>
+            <text class="t-a" x="300" y="134" text-anchor="middle" data-fade style="transition-delay:1s">initialize()  →  one program · device_count() = 4</text>
           </svg>
         </div>
         <figcaption>G1: the same program starts on every machine; initialize() joins them so collectives span all devices. A no-op when run single-process.</figcaption>
@@ -807,21 +809,14 @@ sampler.seek(epoch, offset)</code></pre>
 # G1 re-inits the cluster, Orbax restores the checkpoint, G4 seeks the data to state.step</code></pre>
       <figure>
         <div class="svg-wrap anim">
-          <svg viewBox="0 0 600 130" role="img" aria-label="Elastic restart loop: run, crash, relaunch, resume from checkpoint">
-            <g stroke-width="1.3">
-              <rect class="f-p2 s-a" x="24" y="46" width="96" height="40" rx="6" data-fade/>
-              <text class="t-a" x="72" y="70" text-anchor="middle" data-fade>run</text>
-              <rect class="f-p2 s-b" x="176" y="46" width="96" height="40" rx="6" data-fade style="transition-delay:.25s"/>
-              <text class="t-b" x="224" y="70" text-anchor="middle" data-fade style="transition-delay:.25s">crash ✗</text>
-              <rect class="f-p2 s-r" x="328" y="46" width="110" height="40" rx="6" data-fade style="transition-delay:.5s"/>
-              <text class="t-l" x="383" y="70" text-anchor="middle" data-fade style="transition-delay:.5s">relaunch</text>
-              <rect class="f-p2 s-a" x="494" y="46" width="90" height="40" rx="6" data-fade style="transition-delay:.75s"/>
-              <text class="t-a" x="539" y="65" text-anchor="middle" data-fade style="transition-delay:.75s">resume at</text>
-              <text class="t-a" x="539" y="79" text-anchor="middle" data-fade style="transition-delay:.75s">right step</text>
-            </g>
-            <g class="s-a flow" stroke-width="1.2" marker-end="url(#ar3)"><path d="M120 66 H172"/><path d="M272 66 H324"/><path d="M438 66 H490"/></g>
-            <path class="s-r" stroke-width="1.1" fill="none" data-draw style="--len:640" d="M539 86 V110 H72 V90"/>
-            <defs><marker id="ar3" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto"><path class="f-a" d="M0 0 L6 3 L0 6 Z"/></marker></defs>
+          <svg viewBox="0 0 600 140" role="img" aria-label="Elastic restart loop: run, crash, relaunch, resume from checkpoint">
+            <g data-fade><rect class="box-a" x="24" y="40" width="100" height="46" rx="7"/><text class="t-h" x="74" y="62" text-anchor="middle">run</text><text class="t-dim" x="74" y="77" text-anchor="middle">training</text></g>
+            <g data-fade style="transition-delay:.22s"><rect class="box-b" x="172" y="40" width="100" height="46" rx="7"/><text class="t-h" x="222" y="62" text-anchor="middle" fill="var(--accent-2)">crash</text><text class="t-dim" x="222" y="77" text-anchor="middle" fill="var(--accent-2)">process dies</text></g>
+            <g data-fade style="transition-delay:.44s"><rect class="box" x="320" y="40" width="108" height="46" rx="7"/><text class="t-h" x="374" y="62" text-anchor="middle">relaunch</text><text class="t-dim" x="374" y="77" text-anchor="middle">--resume</text></g>
+            <g data-fade style="transition-delay:.66s"><rect class="box-a" x="476" y="40" width="104" height="46" rx="7"/><text class="t-h" x="528" y="62" text-anchor="middle">resume</text><text class="t-dim" x="528" y="77" text-anchor="middle">at state.step</text></g>
+            <g class="s-a" stroke-width="1.4" fill="none" marker-end="url(#arw)"><path d="M124 63 H168"/><path class="s-b" d="M272 63 H316"/><path d="M428 63 H472"/></g>
+            <path class="s-r" stroke-width="1.2" fill="none" marker-end="url(#arw)" data-draw style="--len:660" d="M528 86 V112 H74 V90"/>
+            <text class="t-dim" x="300" y="126" text-anchor="middle">last checkpoint + G4 seek</text>
           </svg>
         </div>
         <figcaption>G5: the supervisor turns a crash into a relaunch that resumes from the last checkpoint at the exact step, closing the loop.</figcaption>
