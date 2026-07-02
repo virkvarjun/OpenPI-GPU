@@ -163,11 +163,17 @@ details .ans{margin:12px 0 2px 22px; font-size:16.5px; color:var(--ink-soft);}
 .story .panel{transition:opacity .45s ease;}
 .story.playing .panel{opacity:.32;}
 .story.playing .panel.active{opacity:1;}
-.panel-box{fill:var(--paper); stroke:var(--rule); stroke-width:1;}
+.panel-box{fill:var(--paper); stroke:var(--rule); stroke-width:1; filter:url(#soft);}
 .story.playing .panel.active .panel-box{stroke:var(--accent); stroke-width:1.6;}
-.phead{fill:var(--accent); font-family:"JetBrains Mono",monospace; font-size:11px; font-weight:600;}
-.pcap{fill:var(--ink-soft); font-family:"Source Serif 4",serif; font-size:11px;}
+.phead{fill:var(--accent); font-family:"JetBrains Mono",monospace; font-size:11px; font-weight:600; letter-spacing:.02em;}
+.pcap{fill:var(--ink-soft); font-family:"Source Serif 4",serif; font-size:11.5px;}
 .pnum{fill:var(--accent); font-family:"JetBrains Mono",monospace; font-size:9.5px;}
+/* polished diagram box + shape/dim labels */
+.box{fill:var(--paper); stroke:var(--rule); stroke-width:1.1; filter:url(#soft);}
+.box-a{fill:var(--paper); stroke:var(--accent); stroke-width:1.3; filter:url(#soft);}
+.box-b{fill:var(--paper); stroke:var(--accent-2); stroke-width:1.3; filter:url(#soft);}
+.t-dim{fill:var(--ink-soft); font-family:"JetBrains Mono",monospace; font-size:9px; opacity:.9;}
+.t-h{fill:var(--ink); font-family:"Inter",sans-serif; font-size:12px; font-weight:600;}
 
 /* svg helpers */
 .s-a{stroke:var(--accent); fill:none;} .s-b{stroke:var(--accent-2); fill:none;} .s-r{stroke:var(--rule); fill:none;}
@@ -191,6 +197,10 @@ details .ans{margin:12px 0 2px 22px; font-size:16.5px; color:var(--ink-soft);}
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <marker id="arw" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="6" refY="4" orient="auto-start-reverse"><path d="M1 1 L7 4 L1 7 Z" fill="context-stroke"/></marker>
+  <filter id="soft" x="-30%" y="-30%" width="160%" height="180%"><feDropShadow dx="0" dy="1.4" stdDeviation="2" flood-color="#4a3f2a" flood-opacity="0.14"/></filter>
+</defs></svg>
 <div id="progress"></div>
 <button class="menu-toggle" id="menuToggle">☰ Contents</button>
 <div class="scrim" id="scrim"></div>
@@ -457,55 +467,66 @@ data_sharding  = NamedSharding(mesh, P(("batch", "fsdp")))  # shard batch dim 0,
         sharded, and only the one matrix currently in use is ever whole.</p>
       <figure>
         <div class="svg-wrap">
-          <svg class="story" viewBox="0 0 760 200" role="img" aria-label="FSDP one-layer storyboard: all-gather, matmul, free, reduce-scatter">
+          <svg class="story" viewBox="0 0 760 250" role="img" aria-label="FSDP one-layer storyboard: all-gather, matmul, free, reduce-scatter, with resident memory">
             <!-- panel 1: all-gather -->
             <g class="panel" data-panel="0">
-              <rect class="panel-box" x="8" y="10" width="176" height="180" rx="8"/>
-              <text class="phead" x="22" y="32">① all-gather</text>
-              <g class="f-a"><rect x="47" y="52" width="20" height="13" opacity=".4"/><rect x="73" y="52" width="20" height="13" opacity=".6"/><rect x="99" y="52" width="20" height="13" opacity=".8"/><rect x="125" y="52" width="20" height="13"/></g>
-              <path class="s-a" stroke-width="1.2" d="M96 68 V88"/><path class="f-a" d="M92 86 L96 94 L100 86 Z"/>
-              <g class="f-a"><rect x="28" y="98" width="33" height="17" opacity=".4"/><rect x="61" y="98" width="33" height="17" opacity=".6"/><rect x="94" y="98" width="33" height="17" opacity=".8"/><rect x="127" y="98" width="33" height="17"/></g>
-              <text class="pcap" x="96" y="150" text-anchor="middle">shards → full W</text>
-              <text class="pcap" x="96" y="166" text-anchor="middle">on every device</text>
+              <rect class="panel-box" x="8" y="8" width="176" height="168" rx="9"/>
+              <text class="phead" x="22" y="30">① all-gather</text>
+              <g class="f-a"><rect x="47" y="46" width="20" height="13" rx="1.5" opacity=".4"/><rect x="73" y="46" width="20" height="13" rx="1.5" opacity=".6"/><rect x="99" y="46" width="20" height="13" rx="1.5" opacity=".8"/><rect x="125" y="46" width="20" height="13" rx="1.5"/></g>
+              <path class="s-a" stroke-width="1.3" marker-end="url(#arw)" d="M96 62 V82"/>
+              <g class="f-a"><rect x="28" y="88" width="33" height="17" rx="1.5" opacity=".4"/><rect x="61" y="88" width="33" height="17" rx="1.5" opacity=".6"/><rect x="94" y="88" width="33" height="17" rx="1.5" opacity=".8"/><rect x="127" y="88" width="33" height="17" rx="1.5"/></g>
+              <text class="t-dim" x="96" y="124" text-anchor="middle">4·[d, d⁄4] → [d, d]</text>
+              <text class="pcap" x="96" y="146" text-anchor="middle">each device now</text>
+              <text class="pcap" x="96" y="162" text-anchor="middle">holds the full W</text>
             </g>
-            <text class="t-a" x="189" y="104" text-anchor="middle" font-size="15">→</text>
+            <text class="t-a" x="189" y="92" text-anchor="middle" font-size="15">›</text>
             <!-- panel 2: matmul -->
             <g class="panel" data-panel="1">
-              <rect class="panel-box" x="194" y="10" width="176" height="180" rx="8"/>
-              <text class="phead" x="208" y="32">② matmul</text>
-              <g class="f-a"><rect x="210" y="92" width="13" height="20" opacity=".4"/><rect x="223" y="92" width="13" height="20" opacity=".6"/><rect x="236" y="92" width="13" height="20" opacity=".8"/><rect x="249" y="92" width="13" height="20"/></g>
-              <text class="t-l" x="272" y="106" font-size="14">×</text>
-              <rect class="s-r" x="286" y="92" width="20" height="20" rx="2" fill="var(--paper)"/>
-              <text class="t-l" x="318" y="106" font-size="14">=</text>
-              <rect class="f-a" x="330" y="90" width="30" height="24" rx="2" opacity=".55"/>
-              <text class="pcap" x="220" y="150">full W · local batch</text>
-              <text class="pcap" x="252" y="166" text-anchor="middle">→ activations</text>
+              <rect class="panel-box" x="194" y="8" width="176" height="168" rx="9"/>
+              <text class="phead" x="208" y="30">② matmul</text>
+              <g class="f-a"><rect x="214" y="78" width="12" height="22" rx="1.5" opacity=".4"/><rect x="226" y="78" width="12" height="22" rx="1.5" opacity=".6"/><rect x="238" y="78" width="12" height="22" rx="1.5" opacity=".8"/><rect x="250" y="78" width="12" height="22" rx="1.5"/></g>
+              <text class="t-l" x="276" y="93" font-size="13">×</text>
+              <rect class="box" x="288" y="78" width="22" height="22" rx="2"/>
+              <text class="t-l" x="322" y="93" font-size="13">=</text>
+              <rect class="f-a" x="334" y="76" width="28" height="26" rx="2" opacity=".55"/>
+              <text class="t-dim" x="282" y="124" text-anchor="middle">[d, d] · [B, d] = [B, d]</text>
+              <text class="pcap" x="282" y="146" text-anchor="middle">compute this</text>
+              <text class="pcap" x="282" y="162" text-anchor="middle">layer's activations</text>
             </g>
-            <text class="t-a" x="375" y="104" text-anchor="middle" font-size="15">→</text>
+            <text class="t-a" x="375" y="92" text-anchor="middle" font-size="15">›</text>
             <!-- panel 3: free -->
             <g class="panel" data-panel="2">
-              <rect class="panel-box" x="380" y="10" width="176" height="180" rx="8"/>
-              <text class="phead" x="394" y="32">③ free full W</text>
-              <rect class="s-r" x="398" y="66" width="120" height="18" rx="3" fill="none" stroke-dasharray="4 4"/>
-              <text class="t-b" x="458" y="80" text-anchor="middle" font-size="15">✕</text>
-              <path class="s-a" stroke-width="1.2" d="M458 90 V108"/><path class="f-a" d="M454 106 L458 114 L462 106 Z"/>
-              <rect class="f-a" x="443" y="118" width="30" height="17"/>
-              <text class="pcap" x="468" y="150" text-anchor="middle">drop the full copy,</text>
-              <text class="pcap" x="468" y="166" text-anchor="middle">keep only the shard</text>
+              <rect class="panel-box" x="380" y="8" width="176" height="168" rx="9"/>
+              <text class="phead" x="394" y="30">③ free full W</text>
+              <rect class="s-r" x="400" y="52" width="116" height="17" rx="3" fill="none" stroke-dasharray="4 4"/>
+              <text class="t-b" x="458" y="65" text-anchor="middle" font-size="14">✕</text>
+              <path class="s-a" stroke-width="1.3" marker-end="url(#arw)" d="M458 76 V96"/>
+              <rect class="f-a" x="443" y="102" width="30" height="17" rx="1.5"/>
+              <text class="t-dim" x="468" y="124" text-anchor="middle">release [d, d]</text>
+              <text class="pcap" x="468" y="146" text-anchor="middle">drop the full copy,</text>
+              <text class="pcap" x="468" y="162" text-anchor="middle">keep only the shard</text>
             </g>
-            <text class="t-a" x="561" y="104" text-anchor="middle" font-size="15">→</text>
+            <text class="t-a" x="561" y="92" text-anchor="middle" font-size="15">›</text>
             <!-- panel 4: reduce-scatter -->
             <g class="panel" data-panel="3">
-              <rect class="panel-box" x="566" y="10" width="176" height="180" rx="8"/>
-              <text class="phead" x="580" y="32">④ reduce-scatter</text>
-              <g class="f-b"><rect x="610" y="48" width="16" height="12" opacity=".6"/><rect x="630" y="48" width="16" height="12" opacity=".6"/><rect x="650" y="48" width="16" height="12" opacity=".6"/><rect x="670" y="48" width="16" height="12" opacity=".6"/></g>
-              <g class="s-a" stroke-width="1"><path d="M618 60 L652 84"/><path d="M638 60 L652 84"/><path d="M658 60 L654 84"/><path d="M678 60 L656 84"/></g>
-              <text class="t-a" x="654" y="98" text-anchor="middle" font-size="13">Σ</text>
-              <path class="s-a" stroke-width="1.2" d="M654 102 V116"/>
-              <g class="f-a"><rect x="610" y="120" width="16" height="12" opacity=".4"/><rect x="630" y="120" width="16" height="12" opacity=".6"/><rect x="650" y="120" width="16" height="12" opacity=".8"/><rect x="670" y="120" width="16" height="12"/></g>
-              <text class="pcap" x="654" y="156" text-anchor="middle">sum grads,</text>
-              <text class="pcap" x="654" y="172" text-anchor="middle">split back to shards</text>
+              <rect class="panel-box" x="566" y="8" width="176" height="168" rx="9"/>
+              <text class="phead" x="580" y="30">④ reduce-scatter</text>
+              <g class="f-b"><rect x="610" y="44" width="16" height="12" rx="1.5" opacity=".65"/><rect x="630" y="44" width="16" height="12" rx="1.5" opacity=".65"/><rect x="650" y="44" width="16" height="12" rx="1.5" opacity=".65"/><rect x="670" y="44" width="16" height="12" rx="1.5" opacity=".65"/></g>
+              <g class="s-a" stroke-width="1"><path d="M618 56 L652 78"/><path d="M638 56 L652 78"/><path d="M658 56 L654 78"/><path d="M678 56 L656 78"/></g>
+              <text class="t-a" x="654" y="90" text-anchor="middle" font-size="13">Σ</text>
+              <path class="s-a" stroke-width="1.3" marker-end="url(#arw)" d="M654 94 V108"/>
+              <g class="f-a"><rect x="610" y="112" width="16" height="12" rx="1.5" opacity=".4"/><rect x="630" y="112" width="16" height="12" rx="1.5" opacity=".6"/><rect x="650" y="112" width="16" height="12" rx="1.5" opacity=".8"/><rect x="670" y="112" width="16" height="12" rx="1.5"/></g>
+              <text class="t-dim" x="654" y="140" text-anchor="middle">Σ∇ᵢ → [d, d⁄4]</text>
+              <text class="pcap" x="654" y="162" text-anchor="middle">sum, split to shards</text>
             </g>
+            <!-- resident-memory timeline -->
+            <text class="t-dim" x="8" y="200">HBM resident</text>
+            <line x1="96" y1="238" x2="742" y2="238" stroke="var(--rule-strong)" stroke-width="1"/>
+            <text class="t-dim" x="88" y="212" text-anchor="end">full</text>
+            <text class="t-dim" x="88" y="241" text-anchor="end">shard</text>
+            <polygon class="f-a" opacity=".10" points="96,238 96,238 172,208 356,208 400,208 540,238 742,238"/>
+            <polyline fill="none" stroke="var(--accent)" stroke-width="1.8" points="96,238 172,208 356,208 400,208 540,238 742,238"/>
+            <g fill="var(--accent)"><circle cx="96" cy="238" r="2.5"/><circle cx="278" cy="208" r="2.5"/><circle cx="468" cy="238" r="2.5"/><circle cx="654" cy="238" r="2.5"/></g>
           </svg>
         </div>
         <figcaption>One layer of FSDP as four phases. The all-gather assembles the full weight on every device just in time; the matmul runs; the full copy is freed; gradients are summed and split back into shards. Whether the gather in the next layer hides behind this matmul is what sets the scaling efficiency.</figcaption>
