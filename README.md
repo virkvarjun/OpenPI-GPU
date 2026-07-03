@@ -123,6 +123,54 @@ Cross-epoch continuity is covered by a test.
 G5, elastic restart: [`elastic_launch.py`](scripts/elastic_launch.py) restarts training from the last checkpoint
 when a process dies. A fault-injection test exercises the crash, restart, and exact-resume path.
 
+## Interactive demo
+
+A terminal demo you drive: kill a training process and watch it either die (no fault tolerance) or be caught by
+the elastic supervisor, restored from checkpoint, and resumed on the provably-identical data stream. Everything is
+produced by the real code, a real `pi0` train step on `FakeData`, real Orbax checkpoints, the real
+[`elastic_launch.py`](scripts/elastic_launch.py) supervisor, and the real
+[`data_sharding`](src/openpi/training/data_sharding.py) resume mapping. Nothing is simulated.
+
+```bash
+make demo                                              # interactive, elastic supervisor
+python scripts/demo_fault_tolerance.py --mode naive    # interactive, NO supervisor: a kill ends the run
+python scripts/demo_fault_tolerance.py --script kill@step=6 --record   # non-interactive, for recording
+```
+
+Interactive hotkeys: `k` kill a process, `c` show the checkpoint step, `r` manual restart (naive), `q` quit. The
+status line shows the real per-step loss; killing in `--mode naive` vs the default sharder mode, back to back, is
+the whole argument. On a sharder kill the demo prints the exactness proof, computed from the real `data_sharding`:
+
+```
+✗ killed worker pid 83727 at step 4
+→ SHARDER mode: launcher exits non-zero → elastic supervisor relaunches with --resume.
+→ restored Orbax checkpoint @ step 2; resuming.
+PROOF — resume is on the exact data (real openpi.training.data_sharding)
+  resume_position(step=2, N=1024, B=2) = (epoch 0, offset 2)
+  reference (never-crashed) global batch @2 : [1014, 761]   sha ba170693d5
+  resumed run's next global batch        @2 : [1014, 761]   sha ba170693d5
+  ✓ identical — 0 examples skipped or duplicated
+```
+
+**Honesty and scope.** This is real code on one machine. What it demonstrates and proves: crash detection, the
+elastic relaunch, Orbax checkpoint restore, and an exact data-stream resume (the index proof above). What it does
+**not** claim:
+
+- **Multi-process is the same code path but environment-limited here.** `--nproc 2` uses the identical G1 bring-up
+  and within-batch sharding a multi-node run would, and the bring-up itself works (`device_count()==2`), but
+  multi-process JAX *training* is not reliable on a macOS-CPU laptop: the coordination service kills the
+  distributed step within seconds and this `jaxlib` exposes no heartbeat-timeout knob. It runs on Linux/CI. So the
+  demo **defaults to 1 process**, where G1 is a genuine no-op. This is the same class of multi-process coordination
+  fragility flagged for multi-node NCCL; it is never presented as a validated multi-node run.
+- **Bit-identical loss continuation is not claimed.** The data-stream resume is exact (proven). The resumed loss
+  on the tiny CPU `debug` config can diverge when resuming from a checkpoint left by a hard kill (an
+  Orbax-finalization / CPU-numerics artifact not fully characterized here). The supervisor handles it regardless.
+- JAX-on-CPU startup can be flaky on macOS; if a run exits before the kill point, re-run (or use Linux/CI).
+
+Setup (CPU, no GPU): `uv pip install tqdm_loggable wandb numpydantic "orbax-checkpoint==0.11.13" tensorstore
+sentencepiece augmax`, and note `orbax-checkpoint` **must** be pinned to `0.11.13` (0.11.24 breaks checkpoint
+saves on jax 0.5.3). To record: run the `--script … --record` form under `asciinema rec`.
+
 ## Reproduce
 
 ```bash
