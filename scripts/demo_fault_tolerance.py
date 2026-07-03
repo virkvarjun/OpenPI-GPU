@@ -130,16 +130,11 @@ def full_command(st: State, steps: int, save_interval: int):
 # ---------------------------------------------------------------------------
 # worker discovery (ps-based; no extra deps) + checkpoint reading
 # ---------------------------------------------------------------------------
-def find_workers(exp_name):
-    """PIDs of the real train.py worker processes, found by our unique exp_name in their command line."""
-    try:
-        out = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True).stdout
-    except Exception:
-        return []
+def _parse_workers(ps_output, exp_name):
+    """Pure parser (unit-tested): PIDs of the real train.py workers in `ps` output, excluding the launcher,
+    supervisor, and demo processes that merely carry the same command (and exp_name) in their argv."""
     pids = []
-    for line in out.splitlines():
-        # the real train worker runs scripts/train.py directly; exclude the launcher/supervisor/demo processes
-        # that merely carry the same command (and exp_name) in their argv.
+    for line in ps_output.splitlines():
         if (
             "scripts/train.py" in line
             and f" {exp_name}" in line
@@ -153,6 +148,15 @@ def find_workers(exp_name):
             except ValueError:
                 pass
     return sorted(pids)
+
+
+def find_workers(exp_name):
+    """PIDs of the real train.py worker processes, found by our unique exp_name in their command line."""
+    try:
+        out = subprocess.run(["ps", "-eo", "pid,command"], capture_output=True, text=True).stdout
+    except Exception:
+        return []
+    return _parse_workers(out, exp_name)
 
 
 def checkpoint_step(ckpt_dir: pathlib.Path, exp_name):
