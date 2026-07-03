@@ -49,19 +49,17 @@ jobs:
       # The demo drives a real pi0 train subprocess; that compile is crash-prone on constrained CPU runners
       # (2 cores / ~7 GB), so the live-training steps are best-effort here. The exactness *logic* is gated by the
       # unit tests above; these steps run the demo and capture its output (incl. the printed proof when it lands).
-      - name: Demo — naive (a kill ends the run) [best-effort]
+      # The exactness proof itself is gated above (test_resume_proof_* runs the real data_sharding). Here we run
+      # one real end-to-end demo (naive: kill -> run dies) as a smoke check; it is best-effort and hard-bounded so
+      # the flaky pi0 compile can't hang or OOM the small runner. The heavier sharder path (elastic relaunch storm)
+      # is not run in CI — it exhausts the free 7 GB runner — but it is unit-tested here and shown, with real
+      # captured output, in the README "Interactive demo" section.
+      - name: Demo — naive smoke test (a kill ends the run) [best-effort]
         continue-on-error: true
         run: |
-          timeout 200 python scripts/demo_fault_tolerance.py --mode naive --script kill@step=4 --steps 24 --save-interval 2 --record | tee naive.log || true
-          pkill -9 -f "scripts/train.py|elastic_launch.py|launch_local.py" || true
-
-      - name: Demo — sharder (kill -> supervisor -> restore -> exact-data proof) [best-effort]
-        continue-on-error: true
-        run: |
-          timeout 200 python scripts/demo_fault_tolerance.py --mode sharder --script kill@step=4 --steps 24 --save-interval 2 --record | tee sharder.log || true
-          pkill -9 -f "scripts/train.py|elastic_launch.py|launch_local.py" || true
-          echo "----- child log tail -----"; cat /tmp/sharder_demo_child_*.log 2>/dev/null | tail -40 || true
-          grep -q "0 examples skipped or duplicated" sharder.log && echo "EXACTNESS PROOF PRINTED ON LINUX" || echo "proof not reached (pi0 compile flaky on this runner; logic is covered by the gated unit tests)"
+          timeout 180 python scripts/demo_fault_tolerance.py --mode naive --script kill@step=4 --steps 24 --save-interval 2 --record | tee naive.log || true
+          pkill -9 -f "scripts/train.py|launch_local.py" || true
+          grep -qi "killed worker\|training exited before" naive.log && echo "demo drove a real training subprocess on Linux" || true
 
       - name: Upload logs
         if: always()
