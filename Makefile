@@ -22,4 +22,5 @@ figures:
 
 # Cheap-ladder tests (CPU / localhost multi-process).
 test:
-	$(PY) -m pytest src/openpi/training/data_sharding_test.py scripts/elastic_launch_test.py -q
+	$(PY) -m pytest src/openpi/training/data_sharding_test.py src/openpi/training/distributed_test.py \
+		scripts/elastic_launch_test.py scripts/demo_fault_tolerance_test.py -q

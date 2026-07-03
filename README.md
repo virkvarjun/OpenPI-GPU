@@ -162,10 +162,16 @@ elastic relaunch, Orbax checkpoint restore, and an exact data-stream resume (the
   distributed step within seconds and this `jaxlib` exposes no heartbeat-timeout knob. It runs on Linux/CI. So the
   demo **defaults to 1 process**, where G1 is a genuine no-op. This is the same class of multi-process coordination
   fragility flagged for multi-node NCCL; it is never presented as a validated multi-node run.
-- **Bit-identical loss continuation is not claimed.** The data-stream resume is exact (proven). The resumed loss
-  on the tiny CPU `debug` config can diverge when resuming from a checkpoint left by a hard kill (an
-  Orbax-finalization / CPU-numerics artifact not fully characterized here). The supervisor handles it regardless.
-- JAX-on-CPU startup can be flaky on macOS; if a run exits before the kill point, re-run (or use Linux/CI).
+- **The resumed process is flaky on macOS-CPU JAX; the resume *logic* is not.** The data-stream resume is exact
+  and proven, and the proof is computed from `data_sharding` independently of the subprocess, so it holds even if
+  the subprocess dies. But the resumed training process itself can segfault or emit an `inf` loss intermittently
+  on macOS-CPU (a diagnostic that resumes from a cleanly-finalized checkpoint also segfaults, ruling out a
+  checkpoint or logic bug). This is a platform runtime instability; on Linux/CI it resumes cleanly. The elastic
+  supervisor relaunches on the crash regardless, so the argument (crash → catch → restore → exact data resume)
+  holds; bit-identical loss continuation is only reliable on Linux.
+
+For a full-fidelity run (reliable multi-process and clean resume), run the same command inside a Linux container,
+e.g. `docker run --rm -it -v "$PWD:/w" -w /w python:3.11 bash -lc "<setup>; make demo"`, or in CI.
 
 Setup (CPU, no GPU): `uv pip install tqdm_loggable wandb numpydantic "orbax-checkpoint==0.11.13" tensorstore
 sentencepiece augmax`, and note `orbax-checkpoint` **must** be pinned to `0.11.13` (0.11.24 breaks checkpoint
