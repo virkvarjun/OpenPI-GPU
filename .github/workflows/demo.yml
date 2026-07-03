@@ -34,7 +34,7 @@ jobs:
           pip install "jax==0.5.3" "jaxlib==0.5.3" "flax==0.10.2" "jaxtyping==0.2.36" \
             "orbax-checkpoint==0.11.13" "ml-dtypes==0.4.1" "tensorstore==0.1.74" \
             optax einops ml_collections sentencepiece augmax equinox chex treescope dm-tree \
-            numpydantic transformers safetensors beartype flatbuffers polars rich \
+            numpydantic transformers safetensors "beartype==0.19.0" flatbuffers polars rich \
             tqdm_loggable wandb tyro typing-extensions pillow fsspec pytest pynvml
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
