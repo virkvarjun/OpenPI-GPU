@@ -1,0 +1,73 @@
+name: fault-tolerance-demo
+
+# Proves the interactive fault-tolerance demo on Linux, where JAX CPU is stable (the demo defaults to
+# single-process on macOS laptops because JAX distributed training is flaky there — see README). CI gates on the
+# unit tests and on the single-process demo actually printing the naive-vs-sharder contrast and the real
+# data-exactness proof; it also attempts the multi-process path informationally (not gated).
+
+on:
+  push:
+    branches: [main, feat/jax-multihost-v1]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      WANDB_MODE: disabled
+      JAX_PLATFORMS: cpu
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install CPU dependencies
+        run: |
+          python -m pip install -U pip
+          # Pins that matter: jax 0.5.3 + orbax 0.11.13 (0.11.24 breaks saves on 0.5.3), jaxtyping 0.2.36,
+          # ml-dtypes 0.4.1, tensorstore 0.1.74, flax 0.10.2. torch CPU is needed by the FakeData loader / array typing.
+          pip install "jax==0.5.3" "jaxlib==0.5.3" "flax==0.10.2" "jaxtyping==0.2.36" \
+            "orbax-checkpoint==0.11.13" "ml-dtypes==0.4.1" "tensorstore==0.1.74" \
+            optax einops ml_collections sentencepiece augmax equinox chex treescope dm-tree \
+            numpydantic transformers safetensors beartype flatbuffers polars rich \
+            tqdm_loggable wandb tyro typing-extensions pillow fsspec pytest
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Set PYTHONPATH
+        run: echo "PYTHONPATH=$PWD/src:$PWD/packages/openpi-client/src" >> "$GITHUB_ENV"
+
+      - name: Unit tests (fault tolerance + demo logic)
+        run: |
+          pytest src/openpi/training/data_sharding_test.py src/openpi/training/distributed_test.py \
+                 scripts/elastic_launch_test.py scripts/demo_fault_tolerance_test.py -q
+
+      - name: Demo — naive (a kill ends the run)
+        run: |
+          python scripts/demo_fault_tolerance.py --mode naive --script kill@step=4 --steps 24 --save-interval 2 --record | tee naive.log
+          grep -qi "killed worker" naive.log
+          grep -qi "run is DEAD\|run ended" naive.log
+
+      - name: Demo — sharder (kill -> supervisor -> restore -> exact-data proof)
+        run: |
+          python scripts/demo_fault_tolerance.py --mode sharder --script kill@step=4 --steps 24 --save-interval 2 --record | tee sharder.log
+          grep -qi "killed worker" sharder.log
+          grep -q "restored Orbax checkpoint" sharder.log
+          grep -q "0 examples skipped or duplicated" sharder.log      # the exactness proof passed
+
+      - name: Demo — multi-process (2 procs) [informational, not gated]
+        continue-on-error: true
+        run: |
+          python scripts/demo_fault_tolerance.py --mode sharder --nproc 2 --script kill@step=4 --steps 24 --save-interval 2 --record | tee multiproc.log
+          grep -qi "killed worker" multiproc.log && echo "multi-process reached the kill on Linux" || echo "multi-process did not reach the kill (env)"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-logs
+          path: "*.log"

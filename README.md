@@ -125,6 +125,8 @@ when a process dies. A fault-injection test exercises the crash, restart, and ex
 
 ## Interactive demo
 
+[![fault-tolerance-demo](https://github.com/virkvarjun/OpenPI-GPU/actions/workflows/demo.yml/badge.svg)](https://github.com/virkvarjun/OpenPI-GPU/actions/workflows/demo.yml)
+
 A terminal demo you drive: kill a training process and watch it either die (no fault tolerance) or be caught by
 the elastic supervisor, restored from checkpoint, and resumed on the provably-identical data stream. Everything is
 produced by the real code, a real `pi0` train step on `FakeData`, real Orbax checkpoints, the real
