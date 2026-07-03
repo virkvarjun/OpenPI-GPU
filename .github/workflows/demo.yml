@@ -52,15 +52,16 @@ jobs:
       - name: Demo — naive (a kill ends the run) [best-effort]
         continue-on-error: true
         run: |
-          python scripts/demo_fault_tolerance.py --mode naive --script kill@step=4 --steps 24 --save-interval 2 --record | tee naive.log || true
-          echo "----- child log -----"; cat /tmp/sharder_demo_child_*.log 2>/dev/null | tail -40 || true
+          timeout 200 python scripts/demo_fault_tolerance.py --mode naive --script kill@step=4 --steps 24 --save-interval 2 --record | tee naive.log || true
+          pkill -9 -f "scripts/train.py|elastic_launch.py|launch_local.py" || true
 
       - name: Demo — sharder (kill -> supervisor -> restore -> exact-data proof) [best-effort]
         continue-on-error: true
         run: |
-          python scripts/demo_fault_tolerance.py --mode sharder --script kill@step=4 --steps 24 --save-interval 2 --record | tee sharder.log || true
-          echo "----- child log -----"; cat /tmp/sharder_demo_child_*.log 2>/dev/null | tail -60 || true
-          grep -q "0 examples skipped or duplicated" sharder.log && echo "EXACTNESS PROOF PRINTED" || echo "proof not reached (training subprocess flaky on this runner)"
+          timeout 200 python scripts/demo_fault_tolerance.py --mode sharder --script kill@step=4 --steps 24 --save-interval 2 --record | tee sharder.log || true
+          pkill -9 -f "scripts/train.py|elastic_launch.py|launch_local.py" || true
+          echo "----- child log tail -----"; cat /tmp/sharder_demo_child_*.log 2>/dev/null | tail -40 || true
+          grep -q "0 examples skipped or duplicated" sharder.log && echo "EXACTNESS PROOF PRINTED ON LINUX" || echo "proof not reached (pi0 compile flaky on this runner; logic is covered by the gated unit tests)"
 
       - name: Upload logs
         if: always()

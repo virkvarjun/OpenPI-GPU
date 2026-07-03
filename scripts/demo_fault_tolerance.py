@@ -123,7 +123,7 @@ def full_command(st: State, steps: int, save_interval: int):
     if st.mode == "naive":
         return run
     return [
-        sys.executable, "scripts/elastic_launch.py", "--max-retries", "5", "--backoff-seconds", "1", "--",
+        sys.executable, "scripts/elastic_launch.py", "--max-retries", "2", "--backoff-seconds", "1", "--",
     ] + run
 
 
