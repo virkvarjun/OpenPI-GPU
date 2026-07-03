@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import socket
 import subprocess
 import sys
+import time
 
 
 def _free_port() -> int:
@@ -64,10 +66,26 @@ def main() -> int:
             )
         procs.append(subprocess.Popen(command, env=env))
 
-    exit_code = 0
-    for p in procs:
-        exit_code |= p.wait()
-    return exit_code
+    # Tear down the whole group if any process exits non-zero. Local processes share a coordinator and run
+    # collectives, so a survivor would otherwise block forever on the next barrier waiting for a dead peer.
+    # A launcher must fail the group on any worker failure (like torchrun/mpirun) — this is also what lets the
+    # elastic supervisor (G5) observe a clean non-zero exit and relaunch.
+    while True:
+        finished = [p for p in procs if p.poll() is not None]
+        failed = [p for p in finished if p.returncode != 0]
+        if failed:
+            for p in procs:
+                if p.poll() is None:
+                    p.send_signal(signal.SIGKILL)
+            for p in procs:
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+            return failed[0].returncode or 1
+        if len(finished) == len(procs):
+            return 0
+        time.sleep(0.2)
 
 
 if __name__ == "__main__":

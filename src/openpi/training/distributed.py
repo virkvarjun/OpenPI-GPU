@@ -41,11 +41,13 @@ def maybe_initialize(env: dict[str, str] | None = None) -> bool:
 
     addr, nprocs, pid = env.get(COORDINATOR_ADDRESS), env.get(NUM_PROCESSES), env.get(PROCESS_ID)
     if addr and nprocs and pid:
-        jax.distributed.initialize(
-            coordinator_address=addr,
-            num_processes=int(nprocs),
-            process_id=int(pid),
-        )
+        # Give the rendezvous a generous window so localhost multi-process runs survive a slow (CPU) startup on
+        # a laptop; overridable via JAX_INIT_TIMEOUT (seconds).
+        kwargs = {"coordinator_address": addr, "num_processes": int(nprocs), "process_id": int(pid)}
+        try:
+            jax.distributed.initialize(**kwargs, initialization_timeout=int(env.get("JAX_INIT_TIMEOUT", "600")))
+        except TypeError:
+            jax.distributed.initialize(**kwargs)
         logging.info(
             "[distributed] initialized via explicit rendezvous: process %s/%s at %s | "
             "global_devices=%d local_devices=%d",

@@ -8,6 +8,7 @@ from typing import Protocol
 
 from etils import epath
 import jax
+import jax.experimental.multihost_utils
 import orbax.checkpoint as ocp
 import orbax.checkpoint.future as future
 
@@ -21,21 +22,30 @@ def initialize_checkpoint_dir(
     checkpoint_dir: epath.Path | str, *, keep_period: int | None, overwrite: bool, resume: bool
 ) -> tuple[ocp.CheckpointManager, bool]:
     checkpoint_dir = epath.Path(checkpoint_dir).resolve()
-    resuming = False
-    if checkpoint_dir.exists():
-        if overwrite:
-            checkpoint_dir.rmtree()
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
-        elif resume:
-            resuming = True
-        else:
-            raise FileExistsError(
-                f"Checkpoint directory {checkpoint_dir} already exists. Use --overwrite or --resume "
-                "to indicate how to handle it."
-            )
 
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    # The destructive setup (wipe on overwrite, the exists guard, mkdir) must run on exactly one process. On a
+    # single machine every process shares this filesystem, so if all of them raced here one would create the dir
+    # and the others would spuriously raise FileExistsError (then the survivors would hang on the next
+    # collective). Do it on process 0 only, then barrier so peers proceed once the dir is ready. Single-process
+    # runs (process_count()==1) take the identical path as before.
+    multiproc = jax.process_count() > 1
+    if not multiproc or jax.process_index() == 0:
+        if checkpoint_dir.exists():
+            if overwrite:
+                checkpoint_dir.rmtree()
+                logging.info(f"Wiped checkpoint directory {checkpoint_dir}")
+            elif not resume:
+                raise FileExistsError(
+                    f"Checkpoint directory {checkpoint_dir} already exists. Use --overwrite or --resume "
+                    "to indicate how to handle it."
+                )
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    if multiproc:
+        jax.experimental.multihost_utils.sync_global_devices("initialize_checkpoint_dir")
+
+    # Decide resuming uniformly on every process from the (now-ready) directory: resume only if asked AND a real
+    # checkpoint exists. This replaces the old per-branch `resuming` flag and keeps all processes in agreement.
+    resuming = False
 
     mngr = ocp.CheckpointManager(
         checkpoint_dir,
@@ -52,12 +62,12 @@ def initialize_checkpoint_dir(
         ),
     )
 
-    # Special case: the checkpoint directory exists and the user requests to resume training, but the training run did
-    # not get to the first checkpoint saved. In this case, we don't actually want the train script to try and restore a
-    # checkpoint, since it will fail.
-    if resuming and tuple(mngr.all_steps()) in [(), (0,)]:
-        logging.info("Checkpoint directory exists, but does not contain any checkpoints. Aborting resume.")
-        resuming = False
+    # Resume only if requested AND a real checkpoint exists. (If --resume was passed but the run never reached
+    # its first checkpoint, there is nothing to restore, so start fresh instead of failing.)
+    if resume and tuple(mngr.all_steps()) not in [(), (0,)]:
+        resuming = True
+    elif resume:
+        logging.info("Checkpoint directory has no checkpoints yet; starting fresh instead of resuming.")
 
     return mngr, resuming
 
