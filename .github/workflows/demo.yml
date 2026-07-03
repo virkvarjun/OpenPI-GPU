@@ -35,7 +35,7 @@ jobs:
             "orbax-checkpoint==0.11.13" "ml-dtypes==0.4.1" "tensorstore==0.1.74" \
             optax einops ml_collections sentencepiece augmax equinox chex treescope dm-tree \
             numpydantic transformers safetensors beartype flatbuffers polars rich \
-            tqdm_loggable wandb tyro typing-extensions pillow fsspec pytest
+            tqdm_loggable wandb tyro typing-extensions pillow fsspec pytest pynvml
           pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Set PYTHONPATH
