@@ -23,6 +23,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 
@@ -32,6 +33,13 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _pump(proc: subprocess.Popen, tag: str) -> None:
+    """Prefix every child output line with its process tag (used by --tag-output consumers, e.g. the demo)."""
+    for line in proc.stdout:
+        sys.stdout.write(f"{tag} {line}")
+        sys.stdout.flush()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--nproc", type=int, required=True, help="number of local processes")
@@ -39,6 +47,11 @@ def main() -> int:
     parser.add_argument("--backend", choices=["cpu", "gpu"], default="cpu",
                         help="cpu = simulated CPU devices (cheap ladder); gpu = real GPUs via CUDA_VISIBLE_DEVICES")
     parser.add_argument("--coordinator-port", type=int, default=None, help="defaults to a free port")
+    parser.add_argument("--tag-output", action="store_true",
+                        help="capture each child's stdout+stderr and prefix every line with '[proc N]' so a "
+                             "consumer (e.g. scripts/demo_sharder.py) can attribute lines to processes; also "
+                             "prints '[launcher] spawned proc N pid P' lines. Off by default: children inherit "
+                             "stdout unchanged.")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="-- <command> run in each process")
     args = parser.parse_args()
 
@@ -64,14 +77,27 @@ def main() -> int:
             env["XLA_FLAGS"] = (
                 f"{env.get('XLA_FLAGS', '')} --xla_force_host_platform_device_count={args.devices_per_proc}".strip()
             )
-        procs.append(subprocess.Popen(command, env=env))
+        if args.tag_output:
+            p = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, bufsize=1)
+            print(f"[launcher] spawned proc {i} pid {p.pid}", flush=True)
+            threading.Thread(target=_pump, args=(p, f"[proc {i}]"), daemon=True).start()
+            procs.append(p)
+        else:
+            procs.append(subprocess.Popen(command, env=env))
 
     # Tear down the whole group if any process exits non-zero. Local processes share a coordinator and run
     # collectives, so a survivor would otherwise block forever on the next barrier waiting for a dead peer.
     # A launcher must fail the group on any worker failure (like torchrun/mpirun) — this is also what lets the
     # elastic supervisor (G5) observe a clean non-zero exit and relaunch.
+    reported: set[int] = set()
     while True:
         finished = [p for p in procs if p.poll() is not None]
+        if args.tag_output:
+            for p in finished:
+                if p.pid not in reported:
+                    reported.add(p.pid)
+                    print(f"[launcher] proc {procs.index(p)} pid {p.pid} exited rc={p.returncode}", flush=True)
         failed = [p for p in finished if p.returncode != 0]
         if failed:
             for p in procs:
