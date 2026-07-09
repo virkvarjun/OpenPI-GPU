@@ -1,7 +1,10 @@
 import dataclasses
 import functools
+import json
 import logging
+import os
 import platform
+import re
 import time
 from typing import Any
 
@@ -259,6 +262,21 @@ def main(config: _config.TrainConfig):
         out_shardings=(train_state_sharding, replicated_sharding),
         donate_argnums=(1,),
     )
+
+    # Demo instrumentation, opt-in via SHARDER_DEMO_HLO=1: log which collective ops the compiled step actually
+    # contains (same vocabulary as openpi.training.attribution), so the demo renders the executable's real
+    # communication — not an assumed one. Compile shares the jit cache with the live calls (same shapes), and
+    # the whole block is a no-op unless the env var is set.
+    if os.environ.get("SHARDER_DEMO_HLO"):
+        # disable_typechecking: jit's donation bookkeeping unflattens ArgInfo leaves through TrainState during
+        # lower(), which trips the jaxtyping annotations (they only ever see arrays on the live path).
+        with at.disable_typechecking():
+            hlo_text = ptrain_step.lower(train_rng, train_state, batch).compile().as_text()
+        collective_re = re.compile(r"\b(all-gather|reduce-scatter|all-reduce|collective-permute|all-to-all)(?:-start)?\(")
+        counts: dict[str, int] = {}
+        for m in collective_re.finditer(hlo_text):
+            counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+        logging.info(f"[demo] hlo-collectives: {json.dumps(counts)}")
 
     # G6 profiling: opt-in via env (SHARDER_PROFILE=1), so the config schema and single-host path are untouched.
     # `prof is None` => the loop below is byte-for-byte the original behavior (no blocking, no extra compile).
