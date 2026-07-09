@@ -52,6 +52,7 @@
     transition: transform 1.4s cubic-bezier(0.22, 1, 0.36, 1);
     will-change: transform;
   }
+  #drift { position: absolute; inset: 0; will-change: transform; }
   @media (prefers-reduced-motion: reduce) {
     #world { transition: none; }
   }
@@ -202,11 +203,56 @@
   #title-card h1 { font-size: clamp(34px, 5vw, 92px); letter-spacing: .42em; font-weight: 700; text-indent: .42em; }
   #title-card p { margin-top: 1.6em; color: var(--ink-2); font-size: clamp(13px, 1.15vw, 22px); letter-spacing: .12em; }
   #title-card .sub { margin-top: .8em; color: var(--ink-3); font-size: clamp(11px, .85vw, 16px); }
+
+  /* ---------- proof / coda overlays ---------- */
+  .proof-box {
+    background: var(--surface); border: 1px solid var(--edge); border-radius: 12px;
+    padding: 2.2em 2.6em; box-shadow: 0 30px 90px rgba(0,0,0,.55);
+    font-size: clamp(12px, 1vw, 19px);
+  }
+  .proof-box h2 { color: var(--ink); letter-spacing: .22em; font-size: 1.05em; margin-bottom: 1.1em; }
+  .proof-box h2 .src { color: var(--ink-3); letter-spacing: .05em; font-weight: 400; font-size: .78em; }
+  .proof-line { color: var(--ink-2); margin: .5em 0; opacity: 0; transform: translateY(6px); transition: opacity .5s ease, transform .5s ease; }
+  .proof-line.show { opacity: 1; transform: none; }
+  .proof-line code { color: var(--ink); }
+  .idx-row { display: flex; align-items: center; gap: .5em; margin: .55em 0; opacity: 0; transition: opacity .5s ease; }
+  .idx-row.show { opacity: 1; }
+  .idx-row .row-label { width: 15em; color: var(--ink-3); font-size: .85em; flex: none; }
+  .idx { min-width: 2.6em; text-align: center; padding: .28em .3em; border-radius: 6px;
+         background: var(--surface-2); border: 1px solid var(--edge); color: var(--ink);
+         font-variant-numeric: tabular-nums; transition: border-color .3s, box-shadow .3s, color .3s; }
+  .idx.match { border-color: var(--ok); box-shadow: 0 0 10px rgba(43,182,115,.25); }
+  .idx.mismatch { border-color: var(--bad); color: var(--bad); }
+  .sha-line { display: flex; gap: 2em; margin-top: 1em; color: var(--ink-3); opacity: 0; transition: opacity .5s ease; }
+  .sha-line.show { opacity: 1; }
+  .sha-line b { color: var(--ink); font-weight: 600; }
+  .verdict { margin-top: 1.2em; font-size: 1.25em; letter-spacing: .12em; opacity: 0; transform: scale(.96); transition: opacity .6s ease, transform .6s cubic-bezier(0.22, 1, 0.36, 1); }
+  .verdict.show { opacity: 1; transform: none; }
+  .verdict.ok { color: var(--ok); text-shadow: 0 0 22px rgba(43,182,115,.35); }
+  .verdict.bad { color: var(--bad); }
+
+  /* ---------- end card ---------- */
+  #end-card .overlay-inner { text-align: center; max-width: 64vw; }
+  #end-card h1 { font-size: clamp(28px, 3.6vw, 66px); letter-spacing: .4em; text-indent: .4em; }
+  #end-card .runline { margin-top: 1.2em; color: var(--ink-2); font-size: clamp(12px, 1vw, 19px); }
+  #end-card .findings { margin-top: 2em; padding: 1.4em 1.8em; border: 1px solid var(--edge); border-radius: 10px;
+                        background: var(--surface); text-align: left; color: var(--ink-2);
+                        font-size: clamp(11px, .85vw, 16px); line-height: 1.7; }
+  #end-card .findings .cap { color: var(--ink-3); font-size: .82em; letter-spacing: .14em; margin-bottom: .6em; }
+  #end-card .findings b { color: var(--ink); }
+  #end-card .repo { margin-top: 1.6em; color: var(--ink-3); letter-spacing: .1em; font-size: clamp(11px, .85vw, 16px); }
+
+  /* traces */
+  #traces path { fill: none; stroke-linecap: round; }
+  #traces .base { opacity: .16; transition: opacity .6s ease, stroke .6s ease; }
+  #traces .base.dead { opacity: .04; }
+  #traces .ring-base { opacity: .10; }
 </style>
 </head>
 <body>
 <div id="stage">
   <div id="world">
+   <div id="drift">
     <div id="grid"></div>
     <svg id="traces"></svg>
     <div id="bottom">
@@ -225,6 +271,7 @@
         <div id="sup-body"><div class="ln" id="sup-idle">quiet. nothing to do.</div></div>
       </div>
     </div>
+   </div>
   </div>
 
   <div id="hud">
@@ -249,6 +296,9 @@
       <p class="sub" id="title-sub"></p>
     </div>
   </div>
+  <div class="overlay" id="proof-card"><div class="overlay-inner"><div class="proof-box" id="proof-box"></div></div></div>
+  <div class="overlay" id="coda-card"><div class="overlay-inner"><div class="proof-box" id="coda-box"></div></div></div>
+  <div class="overlay" id="end-card"><div class="overlay-inner" id="end-inner"></div></div>
 </div>
 
 <script>
@@ -290,6 +340,8 @@ function median(a) {
   const s = [...a].sort((x, y) => x - y);
   return s[Math.floor(s.length / 2)];
 }
+function fmtMs(ms) { return ms >= 10000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`; }
+function plural(n, w) { return `${n} ${w}${n === 1 ? "" : "es"}`; }
 
 /* ---------- panes ---------- */
 function makePane(k) {
@@ -372,10 +424,10 @@ function hudAlive() {
 }
 function hudMs() {
   if (S.profile && S.profile.median_ms) {
-    hudSet("hud-ms", `${S.profile.median_ms.toFixed(0)} (device)`, false);
+    hudSet("hud-ms", `${fmtMs(S.profile.median_ms)} (device)`, false);
   } else {
     const m = median(S.wallMs);
-    if (m != null) hudSet("hud-ms", `${m.toFixed(0)} (wall)`, false);
+    if (m != null) hudSet("hud-ms", `${fmtMs(m)} (wall)`, false);
   }
   // MFU is shown ONLY if the real profiler reported one (needs a real peak-FLOPs for the device).
   if (S.profile && S.profile.mfu != null) hudSet("hud-mfu", `${(S.profile.mfu * 100).toFixed(1)}%`, false);
@@ -451,9 +503,9 @@ function apply(ev) {
       S.meta = ev;
       setGrid(ev.nproc);
       $("title-sub").textContent =
-        `${ev.nproc} processes · batch ${ev.batch_size} · config "${ev.config}" · ${ev.backend} · run ${ev.run_id} @ ${ev.git_sha}`;
+        `${plural(ev.nproc, "process")} · batch ${ev.batch_size} · config "${ev.config}" · ${ev.backend} · run ${ev.run_id} @ ${ev.git_sha}`;
       $("honesty").textContent =
-        `${ev.nproc} processes on one machine — the identical G1/G3/G4/G5 code path a multi-node run uses. ` +
+        `${plural(ev.nproc, "process")} on one machine — the identical G1/G3/G4/G5 code path a multi-node run uses. ` +
         `Not a validated multi-node/NCCL run. Every number is from the real run (${ev.run_id}).`;
       titleCard();
       break;
@@ -491,11 +543,10 @@ function apply(ev) {
       p.step = ev.step;
       if (!p.alive) paneStatus(ev.proc, "up");   // resumed worker is stepping again
       p.el.classList.remove("stalled");
-      const ck = S.ckpt != null ? ` <span style="color:var(--ink-3)">ckpt@${S.ckpt}</span>` : "";
-      const ms = ev.wall_ms != null && ev.wall_ms < 60000 ? ` ${Math.round(ev.wall_ms)} ms ` : " ";
-      paneLine(ev.proc,
-        `step ${String(ev.step).padStart(5, "0")} │ <span class="loss">loss ${ev.loss?.toFixed(4)}</span> │${ms}│${ck}`,
-        "step");
+      const parts = [`step ${String(ev.step).padStart(5, "0")}`, `<span class="loss">loss ${ev.loss?.toFixed(4)}</span>`];
+      if (ev.wall_ms != null && ev.wall_ms < 600000) parts.push(fmtMs(ev.wall_ms));
+      if (S.ckpt != null) parts.push(`<span style="color:var(--ink-3)">ckpt@${S.ckpt}</span>`);
+      paneLine(ev.proc, parts.join(" │ "), "step");
       if (ev.step > S.maxStep) { S.maxStep = ev.step; hudSet("hud-step", String(ev.step), false); }
       if (ev.wall_ms != null && ev.wall_ms < 60000) {
         S.wallMs.push(ev.wall_ms);
@@ -569,8 +620,8 @@ function apply(ev) {
     case "line": {
       if (ev.proc != null) {
         const t = ev.text;
-        // keep panes readable: surface only load-bearing non-step lines
-        if (/local_batch_size|Initialized|restor|checkpoint|Loaded|hlo-collectives|\[profile\]/i.test(t)) {
+        // keep panes readable: surface only load-bearing non-step lines (whitelist, not blacklist)
+        if (/Initialized (data loader|train state)|local_batch_size|hlo-collectives|\[profile\]|restor(ed|ing) checkpoint|Loaded norm stats|Waiting for checkpoint/i.test(t)) {
           paneLine(ev.proc, esc(shorten(t)), "sys");
         }
       } else if (ev.text && /demo|PROOF/i.test(ev.text)) {
@@ -630,20 +681,30 @@ function startLive() {
 
 function startReplay(events) {
   MODE = "replay";
-  const speed = Number(qs.get("speed") || "1");
-  $("chrome").innerHTML = `<span class="mode">REPLAY — recorded real run · timing compressed</span>`;
+  let speed = Number(qs.get("speed") || "1");
+  let paused = false, timer = null, i = 0;
+  const chromeLine = () => {
+    $("chrome").innerHTML =
+      `<span class="mode">REPLAY — recorded real run · timing compressed · ${speed}×${paused ? " · PAUSED" : ""}</span>` +
+      (CAPTURE ? "" : `<span>space pause · [ ] speed</span>`);
+  };
+  chromeLine();
   $("honesty").textContent += "  ·  REPLAY: timing compressed, values verbatim";
-  let i = 0;
   function next() {
-    if (i >= events.length) return;
+    if (paused || i >= events.length) return;
     const ev = events[i++];
     apply(ev);
     if (i < events.length) {
       const dtReal = Math.max(0, events[i].t - ev.t);
       const dt = Math.min(dtReal, 1.6) / speed;   // idle-compress long real gaps (compiles, backoff)
-      setTimeout(next, dt * 1000);
+      timer = setTimeout(next, dt * 1000);
     }
   }
+  addEventListener("keydown", (e) => {
+    if (e.key === " ") { e.preventDefault(); paused = !paused; chromeLine(); if (!paused) next(); }
+    else if (e.key === "]") { speed = Math.min(16, speed * 2); chromeLine(); }
+    else if (e.key === "[") { speed = Math.max(0.25, speed / 2); chromeLine(); }
+  });
   next();
 }
 
@@ -670,6 +731,304 @@ addEventListener("drop", async (e) => {
   startReplay(txt.trim().split("\n").filter(Boolean).map(l => JSON.parse(l)));
 });
 boot();
+</script>
+
+<script>
+"use strict";
+/* =========================================================================================
+   SCENE LAYER — traces (communication as light), camera, choreography, proof/coda/end.
+   Pure presentation: every value rendered below comes from the event object it is handed.
+   ========================================================================================= */
+(function () {
+  const world = $("world"), driftEl = $("drift"), traces = $("traces");
+  const OP_COLOR = { "all-gather": "var(--ag)", "reduce-scatter": "var(--rs)", "all-reduce": "var(--ar)" };
+  const OP_GLOW  = { "all-gather": "#35e0ff", "reduce-scatter": "#ff4fd8", "all-reduce": "#ffb454" };
+
+  /* ---------------- camera ---------------- */
+  const cam = {
+    target: null,
+    to(el, scale = 1.55, ms = 1400) {
+      if (!el) return this.wide(ms);
+      world.style.transitionDuration = REDUCED ? "0s" : ms + "ms";
+      const r = el.getBoundingClientRect();
+      const w = innerWidth, h = innerHeight;
+      // current rect is post-transform; solve for the translate that centers the element at `scale`
+      const cur = this._cur || { x: 0, y: 0, s: 1 };
+      const ex = (r.left + r.width / 2 - cur.x - w / 2 * (1 - cur.s)) / cur.s;
+      const ey = (r.top + r.height / 2 - cur.y - h / 2 * (1 - cur.s)) / cur.s;
+      const x = w / 2 - ex * scale - w / 2 * (1 - scale);
+      const y = h / 2 - ey * scale - h / 2 * (1 - scale);
+      this._cur = { x, y, s: scale };
+      world.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+      this.target = el;
+    },
+    wide(ms = 1600) {
+      world.style.transitionDuration = REDUCED ? "0s" : ms + "ms";
+      world.style.transform = "translate(0px, 0px) scale(1)";
+      this._cur = { x: 0, y: 0, s: 1 };
+      this.target = null;
+    },
+  };
+
+  /* idle drift: a breath, not a wobble. capture keeps a fixed frame; reduced-motion disables. */
+  if (!CAPTURE && !REDUCED) {
+    let t0 = performance.now();
+    (function drift(now) {
+      const t = (now - t0) / 1000;
+      const x = Math.sin(t * 2 * Math.PI / 37) * 5;
+      const y = Math.cos(t * 2 * Math.PI / 53) * 4;
+      driftEl.style.transform = `translate(${x}px, ${y}px)`;
+      requestAnimationFrame(drift);
+    })(t0);
+  }
+
+  /* ---------------- traces ---------------- */
+  const T = { edges: [], ring: null, ops: [], built: false, lastPulse: 0 };
+
+  function paneCenter(k) {
+    const p = S.procs.get(k);
+    if (!p) return null;
+    const r = p.el.getBoundingClientRect();
+    const w = world.getBoundingClientRect();
+    return { x: r.left - w.left + r.width / 2, y: r.top - w.top + r.height / 2 };
+  }
+
+  function buildTraces() {
+    if (!S.collectives || S.procs.size < 2) return;
+    traces.innerHTML = "";
+    T.edges = []; T.ring = null;
+    T.ops = Object.keys(S.collectives.ops || {}).filter(op => OP_COLOR[op] && S.collectives.ops[op] > 0);
+    const ks = [...S.procs.keys()].sort((a, b) => a - b);
+    traces.setAttribute("width", innerWidth); traces.setAttribute("height", innerHeight);
+    traces.setAttribute("viewBox", `0 0 ${innerWidth} ${innerHeight}`);
+    const edgeOps = T.ops.filter(op => op !== "all-reduce");
+    for (let i = 0; i < ks.length; i++) {
+      for (let j = i + 1; j < ks.length; j++) {
+        const a = paneCenter(ks[i]), b = paneCenter(ks[j]);
+        if (!a || !b) continue;
+        edgeOps.forEach((op, oi) => {
+          const off = (oi - (edgeOps.length - 1) / 2) * 10;
+          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + 26 + off;
+          const d = `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`;
+          const base = mkPath(d, OP_COLOR[op], 2, "base");
+          T.edges.push({ a: ks[i], b: ks[j], op, d, base });
+        });
+      }
+    }
+    // all-reduce is a ring THROUGH all panes (that is its topology), not a pane-pair edge
+    if (T.ops.includes("all-reduce") && ks.length >= 2) {
+      const cs = ks.map(paneCenter).filter(Boolean);
+      const cx = cs.reduce((s, c) => s + c.x, 0) / cs.length;
+      const cy = cs.reduce((s, c) => s + c.y, 0) / cs.length;
+      const pts = cs.map(c => ({ x: c.x + (c.x - cx) * -0.12, y: c.y + (c.y - cy) * -0.12 }));
+      let d = `M ${pts[0].x} ${pts[0].y}`;
+      for (let i = 1; i <= pts.length; i++) {
+        const p = pts[i % pts.length], q = pts[(i - 1) % pts.length];
+        const mx = (p.x + q.x) / 2 + (cy - (p.y + q.y) / 2) * 0.12, my = (p.y + q.y) / 2 + ((p.x + q.x) / 2 - cx) * 0.12;
+        d += ` Q ${mx} ${my} ${p.x} ${p.y}`;
+      }
+      T.ring = { d, base: mkPath(d, OP_COLOR["all-reduce"], 2, "base ring-base") };
+    }
+    T.built = true;
+  }
+
+  function mkPath(d, stroke, wpx, cls) {
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", d);
+    p.setAttribute("stroke", stroke);
+    p.setAttribute("stroke-width", wpx);
+    p.setAttribute("class", cls);
+    traces.appendChild(p);
+    return p;
+  }
+
+  /* a pulse: a short bright dash traveling the path. reverse flips direction (gather vs scatter). */
+  function pulse(d, op, { reverse = false, dur = 700, width = 3 } = {}) {
+    if (REDUCED) return;
+    const p = mkPath(d, OP_GLOW[op], width, "pulse");
+    const len = p.getTotalLength();
+    p.style.filter = `drop-shadow(0 0 6px ${OP_GLOW[op]})`;
+    p.setAttribute("stroke-dasharray", `${len * 0.16} ${len}`);
+    const from = reverse ? -len * 0.16 : len;
+    const to = reverse ? len : -len * 0.16;
+    const anim = p.animate(
+      [{ strokeDashoffset: from, opacity: 0.9 }, { strokeDashoffset: to, opacity: 0.55 }],
+      { duration: dur, easing: "cubic-bezier(0.4, 0, 0.6, 1)" });
+    anim.onfinish = () => p.remove();
+  }
+
+  function pulseAll(now) {
+    if (!T.built || now - T.lastPulse < 260) return;   // volley throttle: keeps 60fps and reads as rhythm
+    T.lastPulse = now;
+    for (const e of T.edges) {
+      const aDead = isDead(e.a), bDead = isDead(e.b);
+      e.base.classList.toggle("dead", aDead || bDead);
+      if (aDead || bDead) continue;
+      // all-gather: shards travel OUT to peers (both directions); reduce-scatter: partials converge IN
+      if (e.op === "all-gather") { pulse(e.d, e.op); pulse(e.d, e.op, { reverse: true }); }
+      else if (e.op === "reduce-scatter") { pulse(e.d, e.op, { reverse: T.flip = !T.flip, dur: 850 }); }
+    }
+    if (T.ring && ![...S.procs.values()].some(p => !p.alive && p.el.classList.contains("dead"))) {
+      pulse(T.ring.d, "all-reduce", { dur: 1000 });
+    }
+  }
+
+  function isDead(k) { const p = S.procs.get(k); return p && p.el.classList.contains("dead"); }
+
+  function igniteTraces() {
+    buildTraces();
+    if (REDUCED) return;
+    let i = 0;
+    for (const e of T.edges) setTimeout(() => pulse(e.d, e.op, { dur: 1100, width: 4 }), 120 * i++);
+    if (T.ring) setTimeout(() => pulse(T.ring.d, "all-reduce", { dur: 1500, width: 4 }), 120 * i);
+  }
+  addEventListener("resize", () => { if (T.built) buildTraces(); });
+
+  /* ---------------- proof overlay (typed, sequenced) ---------------- */
+  const HOLD = CAPTURE ? 1.35 : 1;   // capture takes breathe a little longer for the edit
+  function seq(steps) {  // [[delayMs, fn], ...] cumulative
+    let t = 0;
+    for (const [dt, fn] of steps) { t += dt * HOLD; setTimeout(fn, t); }
+    return t;
+  }
+
+  function idxRow(label, arr, cls) {
+    return `<div class="idx-row ${cls || ""}"><span class="row-label">${label}</span>` +
+      arr.map(v => `<span class="idx">${v}</span>`).join("") + `</div>`;
+  }
+
+  function showProof(ev) {
+    const box = $("proof-box");
+    const B = ev.reference.length;
+    box.innerHTML = `
+      <h2>THE PROOF — resume is on the exact data <span class="src">· openpi.training.data_sharding</span></h2>
+      <div class="proof-line" id="pf-1"><code>resume_position(step=${ev.step}, N=${S.meta?.dataset_len}, B=${B})
+        → (epoch ${ev.epoch}, offset ${ev.offset})</code></div>
+      ${idxRow("never-crashed run @ " + ev.step, ev.reference, "pf-ref")}
+      ${idxRow("resumed run @ " + ev.step, ev.resumed, "pf-res")}
+      <div class="sha-line" id="pf-sha">
+        <span>sha256(reference) <b>${ev.sha_ref}</b></span><span>sha256(resumed) <b>${ev.sha_res}</b></span>
+      </div>
+      <div class="verdict ${ev.identical ? "ok" : "bad"}" id="pf-verdict">
+        ${ev.identical ? "✓ IDENTICAL — 0 examples skipped, 0 duplicated" : "✗ MISMATCH"}
+      </div>`;
+    $("proof-card").classList.add("show");
+    const ref = box.querySelector(".pf-ref"), res = box.querySelector(".pf-res");
+    const total = seq([
+      [300, () => $("pf-1").classList.add("show")],
+      [900, () => ref.classList.add("show")],
+      [700, () => res.classList.add("show")],
+      [700, () => {
+        const a = ref.querySelectorAll(".idx"), b = res.querySelectorAll(".idx");
+        for (let i = 0; i < a.length; i++) setTimeout(() => {
+          const ok = a[i].textContent === b[i].textContent;
+          a[i].classList.add(ok ? "match" : "mismatch");
+          b[i].classList.add(ok ? "match" : "mismatch");
+        }, i * 140 * HOLD);
+      }],
+      [B * 140 + 400, () => $("pf-sha").classList.add("show")],
+      [800, () => $("pf-verdict").classList.add("show")],
+    ]);
+    setTimeout(() => $("proof-card").classList.remove("show"), total + (CAPTURE ? 4200 : 3000));
+    $("proof-card").onclick = () => $("proof-card").classList.remove("show");
+  }
+
+  function showCoda(ev) {
+    const box = $("coda-box");
+    box.innerHTML = `
+      <h2>WHY WITHIN-BATCH SHARDING <span class="src">· same global order, two ways to split it</span></h2>
+      ${idxRow("single-process reference @ " + ev.step, ev.reference, "cd-ref")}
+      ${idxRow("naive order[k::N] striping", ev.naive_stripe, "cd-naive")}
+      ${idxRow("sharder within-batch", ev.within_batch, "cd-wb")}
+      <div class="proof-line" id="cd-note">naive striping trains on a <b style="color:var(--bad)">different global batch</b> —
+        within-batch reconstructs the reference <b style="color:var(--ok)">bit-identically</b>
+        (${ev.within_batch_identical ? "verified" : "FAILED"} this run)</div>`;
+    $("coda-card").classList.add("show");
+    const ref = box.querySelector(".cd-ref"), nv = box.querySelector(".cd-naive"), wb = box.querySelector(".cd-wb");
+    const refIdx = [...ref.querySelectorAll(".idx")].map(e => e.textContent);
+    const total = seq([
+      [300, () => ref.classList.add("show")],
+      [800, () => {
+        nv.classList.add("show");
+        [...nv.querySelectorAll(".idx")].forEach((e, i) => setTimeout(() =>
+          e.classList.add(e.textContent === refIdx[i] ? "match" : "mismatch"), i * 120 * HOLD));
+      }],
+      [refIdx.length * 120 + 500, () => {
+        wb.classList.add("show");
+        [...wb.querySelectorAll(".idx")].forEach((e, i) => setTimeout(() =>
+          e.classList.add(e.textContent === refIdx[i] ? "match" : "mismatch"), i * 120 * HOLD));
+      }],
+      [refIdx.length * 120 + 500, () => $("cd-note").classList.add("show")],
+    ]);
+    setTimeout(() => $("coda-card").classList.remove("show"), total + (CAPTURE ? 4200 : 3000));
+    $("coda-card").onclick = () => $("coda-card").classList.remove("show");
+  }
+
+  function showEnd(ev) {
+    $("end-inner").innerHTML = `
+      <h1>SHARDER</h1>
+      <div class="runline">
+        this run: ${S.maxStep >= 0 ? `step ${S.maxStep}` : ""} · ${ev.resumes} kill${ev.resumes === 1 ? "" : "s"} survived ·
+        last checkpoint @ ${S.ckpt ?? "—"} · wall ${fmtWall(ev.t)} · run ${S.meta?.run_id} @ ${S.meta?.git_sha}
+      </div>
+      <div class="findings">
+        <div class="cap">MEASURED SEPARATELY ON 4×H100 (FINDINGS.md — not this run)</div>
+        flash attention <b>+9.3% step time</b> (195.9 → 177.6 ms, bit-identical loss) ·
+        weak scaling <b>2.85× / 980 TFLOP/s aggregate</b> at 4 GPUs ·
+        single-GPU <b>32.1% MFU</b> (gemma_2b, batch 4, full AdamW)
+      </div>
+      <div class="repo">github.com/virkvarjun/OpenPI-JAX- · branch feat/jax-multihost-v1</div>`;
+    $("end-card").classList.add("show");
+  }
+
+  /* ---------------- choreography ---------------- */
+  let stallTimer = null;
+  window.__scene = function (kind, ev) {
+    switch (kind) {
+      case "handshake":
+        setTimeout(() => { igniteTraces(); cam.wide(); }, S.collectives ? 200 : 0);
+        break;
+      case "collectives":
+        if (S.procs.size >= 2 && !T.built) igniteTraces();
+        break;
+      case "step":
+        if (!T.built && S.collectives && S.procs.size >= 2) buildTraces();
+        pulseAll(performance.now());
+        break;
+      case "ckpt":
+        break; // HUD flash carries it; restraint
+      case "kill": {
+        const victim = S.procs.get(ev.proc);
+        if (victim) cam.to(victim.el, 1.5, 900);
+        for (const e of T.edges) if (e.a === ev.proc || e.b === ev.proc) e.base.classList.add("dead");
+        setTimeout(() => cam.wide(1400), 2400 * HOLD);
+        stallTimer = setTimeout(() => cam.to($("sup-panel"), 1.35, 1200), 4200 * HOLD);
+        break;
+      }
+      case "supervisor":
+        if (S.killedProc != null && !S.ended && /died|restart/i.test(ev.text || "")) {
+          if (!stallTimer) cam.to($("sup-panel"), 1.35, 1200);
+        }
+        break;
+      case "resume": {
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
+        cam.wide(1400);
+        for (const e of T.edges) e.base.classList.remove("dead");
+        break;
+      }
+      case "proof":
+        setTimeout(() => showProof(ev), 1200 * HOLD);
+        break;
+      case "coda":
+        // queue behind the proof overlay
+        setTimeout(() => showCoda(ev), (CAPTURE ? 16000 : 12000) * HOLD);
+        break;
+      case "end":
+        setTimeout(() => showEnd(ev), 1200);
+        break;
+    }
+  };
+})();
 </script>
 </body>
 </html>
