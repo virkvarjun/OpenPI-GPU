@@ -90,6 +90,7 @@
   .hud-item .v.dim { color: var(--ink-3); }
   #hud-alive .v.ok { color: var(--ok); }
   #hud-alive .v.bad { color: var(--bad); }
+  #hud-mfu { display: none; }   /* only shown if the real profiler reports one */
   #hud-ckpt .v.flash { animation: ckflash 1.2s ease-out; }
   @keyframes ckflash { 0% { color: var(--ag-glow); text-shadow: 0 0 14px var(--ag-glow); } 100% { color: var(--ink); } }
   #hud-spacer { flex: 1; }
@@ -118,9 +119,11 @@
     100% { opacity: 1; filter: brightness(1); box-shadow: none; }
   }
   .pane.dead {
-    opacity: .34; filter: saturate(.15) brightness(.55);
-    border-color: rgba(224,75,85,.5);
+    opacity: .55; filter: saturate(.4) brightness(.62);
+    border-color: rgba(224, 75, 85, .75);
+    box-shadow: 0 0 34px rgba(224, 75, 85, .16), inset 0 0 60px rgba(224, 75, 85, .07);
   }
+  .pane.dead .pane-head { background: rgba(224, 75, 85, .14); }
   .pane.stalled .pane-body { opacity: .45; }
   .pane.stalled .pane-status { color: var(--warn); }
   .pane-head {
@@ -144,6 +147,8 @@
     line-height: 1.52;
     color: var(--ink-2);
     display: flex; flex-direction: column; justify-content: flex-end;
+    -webkit-mask-image: linear-gradient(to bottom, transparent, black 26%);
+    mask-image: linear-gradient(to bottom, transparent, black 26%);
   }
   .pane-body .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .pane-body .ln.step { color: var(--ink); }
@@ -196,6 +201,22 @@
     position: fixed; top: 4.6vh; right: 1.6vw; z-index: 30;
     display: flex; gap: 1.4em; font-size: clamp(10px, .78vw, 14px); white-space: nowrap;
   }
+
+  /* ---------- narrative caption: one plain sentence per beat, so the story reads at a glance ---------- */
+  #caption {
+    position: fixed; top: 17.5vh; left: 50%; transform: translate(-50%, -8px); z-index: 25;
+    max-width: 78vw; text-align: center;
+    padding: .55em 1.3em; border-radius: 999px;
+    background: rgba(10, 14, 20, .88); border: 1px solid var(--edge);
+    font-size: clamp(14px, 1.25vw, 24px); letter-spacing: .05em; color: var(--ink);
+    opacity: 0; pointer-events: none;
+    transition: opacity .45s ease, transform .45s ease, border-color .45s ease, color .45s ease;
+    white-space: nowrap;
+  }
+  #caption.show { opacity: 1; transform: translate(-50%, 0); }
+  #caption.red { color: #ff8a91; border-color: rgba(224, 75, 85, .6); box-shadow: 0 0 30px rgba(224, 75, 85, .12); }
+  #caption.amber { color: #ffcf87; border-color: rgba(217, 160, 60, .55); box-shadow: 0 0 30px rgba(217, 160, 60, .10); }
+  #caption.green { color: #7fe6b2; border-color: rgba(43, 182, 115, .55); box-shadow: 0 0 30px rgba(43, 182, 115, .12); }
 
   /* ---------- honesty footnote (always present) ---------- */
   #honesty {
@@ -310,6 +331,7 @@
   <div id="hud-legend"></div>
 
   <div id="chrome"></div>
+  <div id="caption"></div>
   <div id="honesty"></div>
 
   <div class="overlay" id="title-card">
@@ -347,6 +369,8 @@ const S = {
   profile: null,           // {median_ms?, mfu?} from a [profile] event
   collectives: null,       // {ops: {...}} from the compiled HLO
   killedProc: null,
+  killedOnce: new Set(),
+  killCkpt: null,
   resumes: 0,
   ended: false,
 };
@@ -414,7 +438,7 @@ function paneStatus(k, state) { // 'up' | 'dead' | 'stalled' | 'pending'
     p.alive = true;
     p.el.classList.add("igniting");
     setTimeout(() => p.el.classList.remove("igniting"), 950);
-    p.statusEl.textContent = "● ALIVE";
+    p.statusEl.textContent = S.killedOnce.has(k) ? "● REVIVED" : "● ALIVE";
     p.statusEl.className = "pane-status ok";
   } else if (state === "dead") {
     p.alive = false;
@@ -452,8 +476,11 @@ function hudMs() {
     const m = median(S.wallMs);
     if (m != null) hudSet("hud-ms", `${fmtMs(m)} (wall)`, false);
   }
-  // MFU is shown ONLY if the real profiler reported one (needs a real peak-FLOPs for the device).
-  if (S.profile && S.profile.mfu != null) hudSet("hud-mfu", `${(S.profile.mfu * 100).toFixed(1)}%`, false);
+  // MFU tile appears ONLY if the real profiler reported one (needs a real peak-FLOPs for the device).
+  if (S.profile && S.profile.mfu != null) {
+    $("hud-mfu").style.display = "";
+    hudSet("hud-mfu", `${(S.profile.mfu * 100).toFixed(1)}%`, false);
+  }
 }
 
 /* ---------- loss curve (single series; recessive grid; direct label, no legend box) ---------- */
@@ -512,9 +539,30 @@ function supLine(text, cls) {
   if (idle) idle.remove();
   const div = document.createElement("div");
   div.className = "ln " + (cls || "");
-  div.textContent = text;
+  // display-shorten absolute interpreter/script paths — the content stays real, the noise goes
+  div.textContent = text.replace(/\/\S*\/python[\d.]*\b/g, "python").replace(/\/\S*\/(scripts\/)/g, "$1");
   supBody.appendChild(div);
   while (supBody.children.length > 8) supBody.removeChild(supBody.firstChild);
+}
+
+/* ---------- narrative caption ---------- */
+let captionTimer = null, captionShownAt = 0, captionQueued = null;
+function caption(html, tone, holdMs) {   // holdMs omitted -> sticky until the next caption
+  // a caption owns the screen for >=2.6s before the next one may replace it (no flash-throughs)
+  const now = performance.now();
+  const wait = Math.max(0, 2600 - (now - captionShownAt));
+  if (captionQueued) clearTimeout(captionQueued);
+  if (wait > 0) { captionQueued = setTimeout(() => caption(html, tone, holdMs), wait); return; }
+  captionShownAt = now;
+  const el = $("caption");
+  el.innerHTML = html;
+  el.className = "show " + (tone || "");
+  if (captionTimer) { clearTimeout(captionTimer); captionTimer = null; }
+  if (holdMs) captionTimer = setTimeout(() => el.classList.remove("show"), holdMs);
+}
+function captionClear() {
+  if (captionQueued) { clearTimeout(captionQueued); captionQueued = null; }
+  $("caption").classList.remove("show");
 }
 
 /* =========================================================================================
@@ -549,7 +597,12 @@ function apply(ev) {
 
     case "handshake": {
       for (const [k] of S.procs) { const p = S.procs.get(k); if (p.alive) p.el.classList.remove("stalled"); }
-      if (ev.attempt > 0) supLine("workers re-rendezvoused — cluster is back", "good");
+      if (ev.attempt > 0) {
+        supLine("workers re-rendezvoused — cluster is back", "good");
+      } else {
+        const each = S.meta?.backend === "gpu" ? " · 1 GPU each" : "";
+        caption(`${S.nproc} training processes${each} — stepping in lockstep`, "", 3800);
+      }
       sceneEvent("handshake", ev);
       break;
     }
@@ -572,8 +625,7 @@ function apply(ev) {
       p.el.classList.remove("stalled");
       const parts = [`step ${String(ev.step).padStart(5, "0")}`, `<span class="loss">loss ${ev.loss?.toFixed(4)}</span>`];
       if (ev.wall_ms != null && ev.wall_ms < 600000) parts.push(fmtMs(ev.wall_ms));
-      if (S.ckpt != null) parts.push(`<span style="color:var(--ink-3)">ckpt@${S.ckpt}</span>`);
-      paneLine(ev.proc, parts.join(" │ "), "step");
+      paneLine(ev.proc, parts.join(" │ "), "step");   // checkpoint lives in the HUD, not on every line
       if (ev.step > S.maxStep) { S.maxStep = ev.step; hudSet("hud-step", String(ev.step), false); }
       if (ev.wall_ms != null && ev.wall_ms < 60000) {
         S.wallMs.push(ev.wall_ms);
@@ -603,11 +655,15 @@ function apply(ev) {
 
     case "kill": {
       S.killedProc = ev.proc;
+      S.killedOnce.add(ev.proc);
+      S.killCkpt = ev.ckpt_step;
       paneStatus(ev.proc, "dead");
       paneLine(ev.proc, `SIGKILL → pid ${ev.pid} at step ${ev.step_at_kill}`, "sys");
       supLine(`✗ process ${ev.proc} (pid ${ev.pid}) killed at step ${ev.step_at_kill} — last checkpoint @ ${ev.ckpt_step}`, "kill");
       $("sup-panel").classList.add("hot");
       for (const [k, p] of S.procs) if (k !== ev.proc && p.alive) paneStatus(k, "stalled");
+      const gpu = S.meta?.backend === "gpu" ? ` — its GPU's worker is gone` : "";
+      caption(`✗ fault injected on purpose: process ${ev.proc} killed at step ${ev.step_at_kill}${gpu}`, "red");
       sceneEvent("kill", ev);
       break;
     }
@@ -623,6 +679,9 @@ function apply(ev) {
 
     case "supervisor": {
       supLine(ev.text, "elastic");
+      if (S.killedProc != null && !S.ended && /died|restarting/i.test(ev.text || "")) {
+        caption(`the supervisor caught the crash — restarting all processes from checkpoint @ ${S.killCkpt ?? "last"}`, "amber");
+      }
       sceneEvent("supervisor", ev);
       break;
     }
@@ -631,6 +690,9 @@ function apply(ev) {
       S.resumes = ev.resumes;
       supLine(`▸ resumed — training continues from checkpoint @ step ${ev.ckpt_step}`, "good");
       $("sup-panel").classList.remove("hot");
+      if (ev.resumes === 1) {
+        caption(`✓ back alive — resumed from checkpoint ${ev.ckpt_step}, picking up the exact batch it left off`, "green", 5200);
+      }
       sceneEvent("resume", ev);
       break;
     }
@@ -971,6 +1033,7 @@ boot();
   }
 
   function showProof(ev) {
+    captionClear();   // the overlay tells this part of the story itself
     const box = $("proof-box");
     const B = ev.reference.length;
     box.innerHTML = `
@@ -1051,6 +1114,7 @@ boot();
   function showEnd(ev) {
     $("proof-card").classList.remove("show");   // the end card owns the screen
     $("coda-card").classList.remove("show");
+    captionClear();
     $("end-inner").innerHTML = `
       <h1>SHARDER</h1>
       <div class="runline">
@@ -1067,8 +1131,9 @@ boot();
     $("end-card").classList.add("show");
   }
 
-  /* ---------------- choreography ---------------- */
-  let stallTimer = null;
+  /* ---------------- choreography ----------------
+     The camera stays WIDE through the fault arc — the story is told by the pane going red, the caption,
+     and the supervisor panel, not by a zoom. */
   window.__scene = function (kind, ev) {
     switch (kind) {
       case "handshake":
@@ -1084,21 +1149,12 @@ boot();
       case "ckpt":
         break; // HUD flash carries it; restraint
       case "kill": {
-        const victim = S.procs.get(ev.proc);
-        if (victim) cam.to(victim.el, 1.5, 900);
         for (const e of T.edges) if (e.a === ev.proc || e.b === ev.proc) e.base.classList.add("dead");
-        setTimeout(() => cam.wide(1400), 2400 * HOLD);
-        stallTimer = setTimeout(() => cam.to($("sup-panel"), 1.35, 1200), 4200 * HOLD);
         break;
       }
       case "supervisor":
-        if (S.killedProc != null && !S.ended && /died|restart/i.test(ev.text || "")) {
-          if (!stallTimer) cam.to($("sup-panel"), 1.35, 1200);
-        }
-        break;
+        break; // the caption + supervisor panel carry this beat
       case "resume": {
-        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; }
-        cam.wide(1400);
         for (const e of T.edges) e.base.classList.remove("dead");
         break;
       }
