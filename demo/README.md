@@ -36,18 +36,18 @@ python scripts/demo_sharder.py --live --nproc 3 --serve 7777
 python scripts/demo_sharder.py --live --nproc 3 --backend gpu --fsdp-devices 3 --batch-size 6 \
     --steps 200 --save-interval 25 --script kill@step=110 --serve 7777
 
-# REPLAY the committed master take — a 20s beat-budgeted cut BY DEFAULT:
+# REPLAY the committed master take — a 30s beat-budgeted cut BY DEFAULT:
 python scripts/demo_sharder.py --replay demo/runs/master_3xh100.jsonl --serve 7777
-# then open  http://localhost:7777/?mode=replay      (this is already the 20s cut)
+# then open  http://localhost:7777/?mode=replay      (this is already the 30s cut)
 #   &capture=1   -> also hide the chrome + fix the camera (clean screen-record)
 #   &realtime=1  -> the full real-pace playback (~1.5 min) with the naive-striping coda
 #   &speed=2     -> playback rate ([ and ] adjust live; space pauses)
 #   &skipto=86   -> jump near a beat (86≈kill, 114≈proof) when reviewing
 ```
 
-The 20s cut is the default, so whatever replay URL you record is 20 seconds. Beat budget:
-title/handshake 2.5s · steady 4s · kill (red) 2s · supervisor (amber) 2s · resume (green) 2s · proof ~4.5s ·
-end card ~2s — the end card is up by ~18.3s and holds, so stop the recording at 20s. Time is remapped onto that
+The 30s cut is the default, so whatever replay URL you record is 30 seconds. Beat budget:
+title/handshake 3.5s · steady 8s · kill (red) 3s · supervisor (amber) 3s · resume (green) 3s · proof ~6s ·
+end card ~3s — the end card is up by ~27.4s and holds, so stop the recording at 30s. Time is remapped onto that
 budget (values verbatim, and the wall clock always shows the real run time). To record cleanly, add `&capture=1`
 to hide the chrome. The naive-striping coda plays only in `&realtime=1`.
 
