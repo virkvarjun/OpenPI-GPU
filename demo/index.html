@@ -738,7 +738,7 @@ function titleCard() {
   if (Number(qs.get("skipto") || "0") > 5) return;   // dev skipto: don't cover the beat being inspected
   const el = $("title-card");
   el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), FASTCUT ? 2700 : 3200);
+  setTimeout(() => el.classList.remove("show"), FASTCUT ? 3000 : 3200);
 }
 
 /* ---------- scene hooks (traces/camera/overlays attach here; no-op until that layer loads) ---------- */
@@ -776,7 +776,7 @@ function startReplay(events) {
   MODE = "replay";
   let speed = Number(qs.get("speed") || "1");
   let paused = false, i = 0;
-  const cutLabel = FASTCUT ? "30s cut" : "real pace";
+  const cutLabel = FASTCUT ? "35s cut" : "real pace";
   const chromeLine = () => {
     $("chrome").innerHTML =
       `<span class="mode">REPLAY — recorded real run · ${cutLabel} · ${speed}×${paused ? " · PAUSED" : ""}</span>` +
@@ -790,9 +790,9 @@ function startReplay(events) {
   // (Chaining setTimeout per event drifts by its per-timer overhead — with thousands of events that
   // stretched the cut far past its budget.)
   //
-  // 30s cut (DEFAULT for replay): the run is remapped onto a fixed budget per beat —
-  //   title/handshake 3.5s · steady state 8s · kill (red) 3s · supervisor (amber) 3s · resume (green) 3s ·
-  //   proof overlay ~6s · end card ~3s. Values untouched; only time is remapped.
+  // 35s cut (DEFAULT for replay): the run is remapped onto a fixed budget per beat —
+  //   title/handshake 4s · steady state 10.5s · kill (red) 3.5s · supervisor (amber) 3.5s · resume (green) 3.5s ·
+  //   proof overlay ~7s · end card ~3s. Values untouched; only time is remapped.
   // The proof overlay and end card ride the tail after `en` on their own timers (see the scene layer).
   // ?realtime=1 disables this and plays real pacing with long gaps (compiles, backoff) idle-compressed to <=1.6s.
   const pt = new Array(events.length);
@@ -801,7 +801,7 @@ function startReplay(events) {
     const tOf = (type) => { const e = events.find(x => x.type === type); return e ? e.t : null; };
     const hs = tOf("handshake"), kl = tOf("kill"), rs = tOf("resume"), en = events[events.length - 1].t;
     if (hs != null && kl != null && rs != null && hs < kl && kl < rs && rs < en) {
-      knots = [[0, 0], [hs, 3.5], [kl, 11.5], [rs, 17.5], [en, 20.5]];
+      knots = [[0, 0], [hs, 4], [kl, 14.5], [rs, 21.5], [en, 24.5]];
     }
   }
   if (knots) {
@@ -1025,7 +1025,7 @@ boot();
   addEventListener("resize", () => { if (T.built) buildTraces(); });
 
   /* ---------------- proof overlay (typed, sequenced) ---------------- */
-  const HOLD = FASTCUT ? 0.75 : 1;   // overlay sequence pacing; the 30s cut gives the proof room to read
+  const HOLD = FASTCUT ? 0.8 : 1;    // overlay sequence pacing; the 35s cut gives the proof room to read
   function seq(steps) {  // [[delayMs, fn], ...] cumulative
     let t = 0;
     for (const [dt, fn] of steps) { t += dt * HOLD; setTimeout(fn, t); }
@@ -1070,7 +1070,7 @@ boot();
       [B * 140 + 600, () => $("pf-sha").classList.add("show")],
       [1100, () => $("pf-verdict").classList.add("show")],
     ]);
-    const dismissAt = total + (FASTCUT ? 2400 : 4500);
+    const dismissAt = total + (FASTCUT ? 2600 : 4500);
     setTimeout(() => { $("proof-card").classList.remove("show"); proofDone(); }, dismissAt);
     $("proof-card").onclick = () => { $("proof-card").classList.remove("show"); proofDone(); };
   }
@@ -1174,8 +1174,8 @@ boot();
       }
       case "proof":
         if (skippedPast(ev)) { proofDone(); break; }   // dev skipto jumped well beyond this beat
-        // 30s cut: hold on the green "back alive" caption ~3s before the proof takes the screen
-        setTimeout(() => showProof(ev), FASTCUT ? 3000 : 1200 * HOLD);
+        // 35s cut: hold on the green "back alive" caption ~3.5s before the proof takes the screen
+        setTimeout(() => showProof(ev), FASTCUT ? 3500 : 1200 * HOLD);
         break;
       case "coda":
         if (skippedPast(ev) || FASTCUT) break;   // the 20s cut ends on the proof; coda plays only in ?realtime=1
