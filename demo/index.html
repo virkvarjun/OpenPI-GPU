@@ -66,6 +66,7 @@
     font-size: clamp(12px, 1.05vw, 18px);
     letter-spacing: .06em;
   }
+  .hud-item { white-space: nowrap; }
   .hud-item .k { color: var(--ink-3); font-size: .72em; letter-spacing: .18em; }
   .hud-item .v { color: var(--ink); font-size: 1.25em; font-variant-numeric: tabular-nums; }
   .hud-item .v.dim { color: var(--ink-3); }
@@ -131,8 +132,9 @@
   .pane-body .ln.step .loss { color: var(--ag-glow); }
   .pane-body .ln.sys { color: var(--ink-3); }
 
-  /* ---------- traces (SVG overlay, populated in the trace layer section) ---------- */
-  #traces { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: visible; }
+  /* ---------- traces: a light bus BETWEEN the panes (z-under them, anchored at their feet) ---------- */
+  #traces { position: absolute; inset: 0; z-index: 1; pointer-events: none; overflow: visible; }
+  #grid, #bottom { z-index: 2; }
 
   /* ---------- supervisor + loss curve row ---------- */
   #bottom {
@@ -172,6 +174,10 @@
   /* legend chips: collective identity is never color-alone (label + direction) */
   .chip { display: inline-flex; align-items: center; gap: .45em; color: var(--ink-2); letter-spacing: .06em; }
   .chip .sw { width: 1.5em; height: 3px; border-radius: 2px; display: inline-block; }
+  #hud-legend {
+    position: fixed; top: 4.6vh; right: 1.6vw; z-index: 30;
+    display: flex; gap: 1.4em; font-size: clamp(10px, .78vw, 14px); white-space: nowrap;
+  }
 
   /* ---------- honesty footnote (always present) ---------- */
   #honesty {
@@ -244,9 +250,9 @@
 
   /* traces */
   #traces path { fill: none; stroke-linecap: round; }
-  #traces .base { opacity: .16; transition: opacity .6s ease, stroke .6s ease; }
-  #traces .base.dead { opacity: .04; }
-  #traces .ring-base { opacity: .10; }
+  #traces .base { opacity: .26; transition: opacity .6s ease, stroke .6s ease; }
+  #traces .base.dead { opacity: .05; }
+  #traces .ring-base { opacity: .16; }
 </style>
 </head>
 <body>
@@ -283,8 +289,8 @@
     <span class="hud-item" id="hud-ckpt"><span class="k">CKPT </span><span class="v dim">—</span></span>
     <span class="hud-item" id="hud-wall"><span class="k">WALL </span><span class="v dim">0:00</span></span>
     <span id="hud-spacer"></span>
-    <span class="hud-item" id="hud-legend"></span>
   </div>
+  <div id="hud-legend"></div>
 
   <div id="chrome"></div>
   <div id="honesty"></div>
@@ -643,6 +649,7 @@ function shorten(t) { return t.replace(/^\d\d:\d\d:\d\d\.\d+\s+\[\w\]\s+/, "").r
 
 /* ---------- title card ---------- */
 function titleCard() {
+  if (Number(qs.get("skipto") || "0") > 5) return;   // dev skipto: don't cover the beat being inspected
   const el = $("title-card");
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), CAPTURE ? 5200 : 3200);
@@ -690,8 +697,11 @@ function startReplay(events) {
   };
   chromeLine();
   $("honesty").textContent += "  ·  REPLAY: timing compressed, values verbatim";
+  const skipTo = Number(qs.get("skipto") || "0");   // dev: instant-apply everything before this run-time
   function next() {
     if (paused || i >= events.length) return;
+    while (i < events.length && events[i].t < skipTo) apply(events[i++]);
+    if (i >= events.length) return;
     const ev = events[i++];
     apply(ev);
     if (i < events.length) {
@@ -785,12 +795,13 @@ boot();
   /* ---------------- traces ---------------- */
   const T = { edges: [], ring: null, ops: [], built: false, lastPulse: 0 };
 
-  function paneCenter(k) {
+  function paneAnchor(k) {
+    // anchor at the pane's foot: traces read as an interconnect bus under the hardware, never over text
     const p = S.procs.get(k);
     if (!p) return null;
     const r = p.el.getBoundingClientRect();
     const w = world.getBoundingClientRect();
-    return { x: r.left - w.left + r.width / 2, y: r.top - w.top + r.height / 2 };
+    return { x: r.left - w.left + r.width / 2, y: r.top - w.top + r.height - 4 };
   }
 
   function buildTraces() {
@@ -804,28 +815,29 @@ boot();
     const edgeOps = T.ops.filter(op => op !== "all-reduce");
     for (let i = 0; i < ks.length; i++) {
       for (let j = i + 1; j < ks.length; j++) {
-        const a = paneCenter(ks[i]), b = paneCenter(ks[j]);
+        const a = paneAnchor(ks[i]), b = paneAnchor(ks[j]);
         if (!a || !b) continue;
         edgeOps.forEach((op, oi) => {
-          const off = (oi - (edgeOps.length - 1) / 2) * 10;
-          const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 + 26 + off;
+          const off = (oi - (edgeOps.length - 1) / 2) * 14;
+          const sag = 48 + (j - i - 1) * 38 + off;   // farther pairs dip deeper — nested bus lanes
+          const mx = (a.x + b.x) / 2, my = Math.max(a.y, b.y) + sag;
           const d = `M ${a.x} ${a.y} Q ${mx} ${my} ${b.x} ${b.y}`;
           const base = mkPath(d, OP_COLOR[op], 2, "base");
           T.edges.push({ a: ks[i], b: ks[j], op, d, base });
         });
       }
     }
-    // all-reduce is a ring THROUGH all panes (that is its topology), not a pane-pair edge
+    // all-reduce is a ring THROUGH all panes (that is its topology), not a pane-pair edge: out along the
+    // deepest lane and back just under the pane feet.
     if (T.ops.includes("all-reduce") && ks.length >= 2) {
-      const cs = ks.map(paneCenter).filter(Boolean);
-      const cx = cs.reduce((s, c) => s + c.x, 0) / cs.length;
-      const cy = cs.reduce((s, c) => s + c.y, 0) / cs.length;
-      const pts = cs.map(c => ({ x: c.x + (c.x - cx) * -0.12, y: c.y + (c.y - cy) * -0.12 }));
-      let d = `M ${pts[0].x} ${pts[0].y}`;
-      for (let i = 1; i <= pts.length; i++) {
-        const p = pts[i % pts.length], q = pts[(i - 1) % pts.length];
-        const mx = (p.x + q.x) / 2 + (cy - (p.y + q.y) / 2) * 0.12, my = (p.y + q.y) / 2 + ((p.x + q.x) / 2 - cx) * 0.12;
-        d += ` Q ${mx} ${my} ${p.x} ${p.y}`;
+      const cs = ks.map(paneAnchor).filter(Boolean);
+      const first = cs[0], last = cs[cs.length - 1];
+      const deep = Math.max(...cs.map(c => c.y)) + 48 + (ks.length - 2) * 38 + 30;
+      let d = `M ${first.x} ${first.y + 10}`;
+      d += ` Q ${(first.x + last.x) / 2} ${deep} ${last.x} ${last.y + 10}`;
+      for (let i = cs.length - 2; i >= 0; i--) {
+        const p = cs[i], q = cs[i + 1];
+        d += ` Q ${(p.x + q.x) / 2} ${Math.max(p.y, q.y) + 16} ${p.x} ${p.y + 10}`;
       }
       T.ring = { d, base: mkPath(d, OP_COLOR["all-reduce"], 2, "base ring-base") };
     }
@@ -926,11 +938,21 @@ boot();
           b[i].classList.add(ok ? "match" : "mismatch");
         }, i * 140 * HOLD);
       }],
-      [B * 140 + 400, () => $("pf-sha").classList.add("show")],
-      [800, () => $("pf-verdict").classList.add("show")],
+      [B * 140 + 600, () => $("pf-sha").classList.add("show")],
+      [1100, () => $("pf-verdict").classList.add("show")],
     ]);
-    setTimeout(() => $("proof-card").classList.remove("show"), total + (CAPTURE ? 4200 : 3000));
-    $("proof-card").onclick = () => $("proof-card").classList.remove("show");
+    const dismissAt = total + (CAPTURE ? 6500 : 4500);
+    setTimeout(() => { $("proof-card").classList.remove("show"); proofDone(); }, dismissAt);
+    $("proof-card").onclick = () => { $("proof-card").classList.remove("show"); proofDone(); };
+  }
+
+  /* the coda waits for the proof to leave the screen (chained, not raced) */
+  let pendingCoda = null, proofFinished = false;
+  function skippedPast(ev) { return ev.t < Number(qs.get("skipto") || "0") - 12; }
+  function proofDone() {
+    if (proofFinished) return;
+    proofFinished = true;
+    if (pendingCoda) { const ev = pendingCoda; pendingCoda = null; setTimeout(() => showCoda(ev), 900); }
   }
 
   function showCoda(ev) {
@@ -961,7 +983,7 @@ boot();
       }],
       [refIdx.length * 120 + 500, () => $("cd-note").classList.add("show")],
     ]);
-    setTimeout(() => $("coda-card").classList.remove("show"), total + (CAPTURE ? 4200 : 3000));
+    setTimeout(() => $("coda-card").classList.remove("show"), total + (CAPTURE ? 5600 : 4000));
     $("coda-card").onclick = () => $("coda-card").classList.remove("show");
   }
 
@@ -1018,11 +1040,13 @@ boot();
         break;
       }
       case "proof":
+        if (skippedPast(ev)) { proofDone(); break; }   // dev skipto jumped well beyond this beat
         setTimeout(() => showProof(ev), 1200 * HOLD);
         break;
       case "coda":
-        // queue behind the proof overlay
-        setTimeout(() => showCoda(ev), (CAPTURE ? 16000 : 12000) * HOLD);
+        if (skippedPast(ev)) break;
+        if (proofFinished) setTimeout(() => showCoda(ev), 900);
+        else pendingCoda = ev;   // chained behind the proof overlay's dismissal
         break;
       case "end":
         setTimeout(() => showEnd(ev), 1200);
