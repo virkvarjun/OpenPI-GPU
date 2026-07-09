@@ -160,6 +160,7 @@ class RunState:
     ckpt_step: int | None = None
     kill_pending: str | None = None  # "step=N" trigger
     killed_at: dict | None = None  # {"step":, "ckpt_step":, "proc":}
+    awaiting_resume: bool = False  # set on relaunch; the next step at/below the old counter proves the resume
     resumes: int = 0
     hlo_emitted: bool = False
     handshake_done: bool = False
@@ -291,6 +292,7 @@ class Orchestrator:
                 if attempt > 0:  # relaunch: pane pids/handshake reset, panes will come back up
                     st.up.clear()
                     st.handshake_done = False
+                    st.awaiting_resume = True
             self.log.emit("supervisor", attempt=attempt, max_retries=int(m.group(2)), text=line)
             return
         if ELASTIC_RE.match(line):
@@ -328,8 +330,16 @@ class Orchestrator:
 
         m = PROFILE_RE.search(text)
         if m:
+            # real format (profiling.one_line): "step=177.61ms  achieved=378.00 TFLOP/s  MFU=38.3%  ..."
             fields = {k: float(v) for k, v in KV_RE.findall(m.group(1))}
-            self.log.emit("profile", proc=proc, text=m.group(1), **{k: v for k, v in fields.items() if k != "proc"})
+            payload = {}
+            if "step" in fields:
+                payload["median_ms"] = fields["step"]
+            if "achieved" in fields:
+                payload["achieved_tflops"] = fields["achieved"]
+            if "MFU" in fields:
+                payload["mfu"] = fields["MFU"] / 100.0  # renderer displays a fraction
+            self.log.emit("profile", proc=proc, text=m.group(1), **payload)
             return
 
         m = STEP_RE.search(text)
@@ -340,7 +350,14 @@ class Orchestrator:
             with st.lock:
                 prev_step, prev_t = st.last_step.get(proc), st.last_step_t.get(proc)
                 wall_ms = round((now - prev_t) * 1000, 1) if prev_t is not None else None
-                rewound = prev_step is not None and step < prev_step - 1
+                # A resume shows up as the step counter coming back at/below where it died. The strict rewind
+                # check alone misses a kill that lands exactly on a checkpoint step (resume restarts at the
+                # same number), so a relaunch (`awaiting_resume`) arms an <= comparison.
+                rewound = prev_step is not None and (
+                    step < prev_step - 1 or (st.awaiting_resume and step <= prev_step)
+                )
+                if rewound:
+                    st.awaiting_resume = False
                 st.last_step[proc] = step
                 st.last_step_t[proc] = now
                 ck = st.ckpt_step
@@ -351,7 +368,7 @@ class Orchestrator:
                 self.log.emit("resume", proc=proc, from_step=step, prev_step=prev_step,
                               ckpt_step=ck, resumes=resumes, detected_by="step_counter_rewind")
                 if self.st.killed_at is not None and resumes == 1:
-                    self._emit_proofs()
+                    self._emit_proofs(from_step=step)
             self.log.emit("step", proc=proc, step=step, wall_ms=wall_ms,
                           loss=vals.get("loss"), **{k: v for k, v in vals.items() if k != "loss"})
             self._maybe_scripted_kill(step)
@@ -386,6 +403,10 @@ class Orchestrator:
 
     def kill(self, proc_idx: int | None) -> bool:
         st = self.st
+        # Read the latest checkpoint from disk NOW (the 0.3s poller can miss a just-finished async save,
+        # and the supervisor line quotes this value).
+        d = self._ckpt_path()
+        on_disk = [int(p.name) for p in d.iterdir() if p.name.isdigit()] if d.exists() else []
         with st.lock:
             if not st.pids:
                 return False
@@ -393,6 +414,8 @@ class Orchestrator:
                 proc_idx = sorted(st.pids)[len(st.pids) // 2]  # default: the middle pane
             pid = st.pids[proc_idx]
             step = st.last_step.get(proc_idx, -1)
+            if on_disk:
+                st.ckpt_step = max(max(on_disk), st.ckpt_step or 0)
             ck = st.ckpt_step
             st.kill_pending = None
             st.killed_at = {"proc": proc_idx, "step": step, "ckpt_step": ck}
@@ -404,8 +427,10 @@ class Orchestrator:
         return True
 
     # ---- proof + coda, computed from the real sharding math at the resume point ----
-    def _emit_proofs(self):
-        ck = self.st.killed_at.get("ckpt_step") or 0
+    def _emit_proofs(self, from_step: int | None = None):
+        # Anchor on the step the run ACTUALLY resumed at (observed in its output), falling back to the
+        # checkpoint recorded at kill time.
+        ck = from_step if from_step is not None else (self.st.killed_at.get("ckpt_step") or 0)
         try:
             self.log.emit("proof", **resume_proof(ck, self.args.batch_size, self.args.nproc))
             if not self.args.no_coda:

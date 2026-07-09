@@ -79,9 +79,26 @@ def test_resume_detected_on_step_rewind(tmp_path):
     orch._parse("[proc 0] Step 26: loss=1.6000")  # counter went backwards -> a resume happened
     resumes = [e for e in log.events if e["type"] == "resume"]
     assert len(resumes) == 1 and resumes[0]["ckpt_step"] == 25
-    # the proof is computed off the checkpoint step and must be exact
+    # the proof anchors on the step the run actually resumed at (its first post-restore batch)
     proof = next(e for e in log.events if e["type"] == "proof")
-    assert proof["identical"] is True and proof["step"] == 25
+    assert proof["identical"] is True and proof["step"] == 26
+
+
+def test_resume_detected_when_kill_lands_on_checkpoint_step(tmp_path):
+    # kill at step N with ckpt@N: the resumed counter comes back at the SAME number, so the strict
+    # rewind check alone would miss it — the relaunch ([elastic] attempt > 0) arms an <= comparison.
+    orch, log = _orch(tmp_path)
+    orch.st.killed_at = {"proc": 0, "step": 4, "ckpt_step": 4}
+    orch._parse("[proc 0] Step 4: loss=1.5000")
+    orch._parse("[elastic] attempt 1/2: python ...")
+    orch._parse("[proc 0] Step 4: loss=1.5000")
+    resumes = [e for e in log.events if e["type"] == "resume"]
+    assert len(resumes) == 1 and resumes[0]["from_step"] == 4
+    proof = next(e for e in log.events if e["type"] == "proof")
+    assert proof["step"] == 4 and proof["identical"] is True
+    # a later ordinary step must NOT re-trigger
+    orch._parse("[proc 0] Step 5: loss=1.4000")
+    assert len([e for e in log.events if e["type"] == "resume"]) == 1
 
 
 # ---- the PROOF and the CODA (real openpi.training.data_sharding) ----
