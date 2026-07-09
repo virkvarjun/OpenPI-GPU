@@ -352,7 +352,9 @@
    event ingestion — the JSONL stream is the single source of truth
    ========================================================================================= */
 const qs = new URLSearchParams(location.search);
-const CAPTURE = qs.get("capture") === "1";
+const CAPTURE = qs.get("capture") === "1";                 // hide chrome + fixed camera (clean screen-record)
+const FASTCUT = qs.get("realtime") == null;                // 20s beat-budgeted cut is the DEFAULT for replay;
+                                                           // pass ?realtime=1 for the full real-pace playback
 const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
 if (CAPTURE) document.body.classList.add("capture");
 
@@ -549,7 +551,7 @@ function supLine(text, cls) {
 let captionTimer = null, captionShownAt = 0, captionQueued = null;
 function caption(html, tone, holdMs) {   // holdMs omitted -> sticky until the next caption
   // a caption owns the screen for a minimum before the next may replace it (no flash-throughs)
-  const minHold = CAPTURE ? 1800 : 2600;
+  const minHold = FASTCUT ? 1800 : 2600;
   const now = performance.now();
   const wait = Math.max(0, minHold - (now - captionShownAt));
   if (captionQueued) clearTimeout(captionQueued);
@@ -736,7 +738,7 @@ function titleCard() {
   if (Number(qs.get("skipto") || "0") > 5) return;   // dev skipto: don't cover the beat being inspected
   const el = $("title-card");
   el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), CAPTURE ? 2000 : 3200);
+  setTimeout(() => el.classList.remove("show"), FASTCUT ? 2000 : 3200);
 }
 
 /* ---------- scene hooks (traces/camera/overlays attach here; no-op until that layer loads) ---------- */
@@ -774,9 +776,10 @@ function startReplay(events) {
   MODE = "replay";
   let speed = Number(qs.get("speed") || "1");
   let paused = false, i = 0;
+  const cutLabel = FASTCUT ? "20s cut" : "real pace";
   const chromeLine = () => {
     $("chrome").innerHTML =
-      `<span class="mode">REPLAY — recorded real run · timing compressed · ${speed}×${paused ? " · PAUSED" : ""}</span>` +
+      `<span class="mode">REPLAY — recorded real run · ${cutLabel} · ${speed}×${paused ? " · PAUSED" : ""}</span>` +
       (CAPTURE ? "" : `<span>space pause · [ ] speed</span>`);
   };
   chromeLine();
@@ -787,14 +790,14 @@ function startReplay(events) {
   // (Chaining setTimeout per event drifts by its per-timer overhead — with thousands of events that
   // stretched the cut far past its budget.)
   //
-  // Capture cut (20s total): the run is remapped onto a fixed budget per beat —
+  // 20s cut (DEFAULT for replay): the run is remapped onto a fixed budget per beat —
   //   title/handshake 2.5s · steady state 4s · kill (red) 2s · supervisor (amber) 2s · resume (green) 2s ·
   //   proof overlay ~4.5s · end card ~2s. Values untouched; only time is remapped.
   // The proof overlay and end card ride the tail after `en` on their own timers (see the scene layer).
-  // Interactive replay: real pacing with long gaps (compiles, backoff) idle-compressed to <=1.6s.
+  // ?realtime=1 disables this and plays real pacing with long gaps (compiles, backoff) idle-compressed to <=1.6s.
   const pt = new Array(events.length);
   let knots = null;
-  if (CAPTURE && !skipTo) {
+  if (FASTCUT && !skipTo) {
     const tOf = (type) => { const e = events.find(x => x.type === type); return e ? e.t : null; };
     const hs = tOf("handshake"), kl = tOf("kill"), rs = tOf("resume"), en = events[events.length - 1].t;
     if (hs != null && kl != null && rs != null && hs < kl && kl < rs && rs < en) {
@@ -1022,7 +1025,7 @@ boot();
   addEventListener("resize", () => { if (T.built) buildTraces(); });
 
   /* ---------------- proof overlay (typed, sequenced) ---------------- */
-  const HOLD = CAPTURE ? 0.55 : 1;   // overlay sequence pacing; tight for the 20s cut but still readable
+  const HOLD = FASTCUT ? 0.55 : 1;   // overlay sequence pacing; tight for the 20s cut but still readable
   function seq(steps) {  // [[delayMs, fn], ...] cumulative
     let t = 0;
     for (const [dt, fn] of steps) { t += dt * HOLD; setTimeout(fn, t); }
@@ -1067,7 +1070,7 @@ boot();
       [B * 140 + 600, () => $("pf-sha").classList.add("show")],
       [1100, () => $("pf-verdict").classList.add("show")],
     ]);
-    const dismissAt = total + (CAPTURE ? 1800 : 4500);
+    const dismissAt = total + (FASTCUT ? 1800 : 4500);
     setTimeout(() => { $("proof-card").classList.remove("show"); proofDone(); }, dismissAt);
     $("proof-card").onclick = () => { $("proof-card").classList.remove("show"); proofDone(); };
   }
@@ -1085,7 +1088,7 @@ boot();
   // proofDone rather than firing when the `end` event lands mid-proof.
   function maybeShowEnd() {
     if (!pendingEnd) return;
-    if (CAPTURE && S.killedProc != null && !proofFinished) return;
+    if (FASTCUT && S.killedProc != null && !proofFinished) return;
     const ev = pendingEnd; pendingEnd = null;
     setTimeout(() => showEnd(ev), 500);
   }
@@ -1171,16 +1174,16 @@ boot();
       }
       case "proof":
         if (skippedPast(ev)) { proofDone(); break; }   // dev skipto jumped well beyond this beat
-        // capture: hold on the green "back alive" caption ~2s before the proof takes the screen
-        setTimeout(() => showProof(ev), CAPTURE ? 2000 : 1200 * HOLD);
+        // 20s cut: hold on the green "back alive" caption ~2s before the proof takes the screen
+        setTimeout(() => showProof(ev), FASTCUT ? 2000 : 1200 * HOLD);
         break;
       case "coda":
-        if (skippedPast(ev) || CAPTURE) break;   // the <30s capture cut ends on the proof; coda plays in interactive replay
+        if (skippedPast(ev) || FASTCUT) break;   // the 20s cut ends on the proof; coda plays only in ?realtime=1
         if (proofFinished) setTimeout(() => showCoda(ev), 900);
         else pendingCoda = ev;   // chained behind the proof overlay's dismissal
         break;
       case "end":
-        if (CAPTURE) { pendingEnd = ev; maybeShowEnd(); }   // chains after the proof dismisses (see maybeShowEnd)
+        if (FASTCUT) { pendingEnd = ev; maybeShowEnd(); }   // chains after the proof dismisses (see maybeShowEnd)
         else setTimeout(() => showEnd(ev), 1200);
         break;
     }

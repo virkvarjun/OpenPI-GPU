@@ -36,19 +36,20 @@ python scripts/demo_sharder.py --live --nproc 3 --serve 7777
 python scripts/demo_sharder.py --live --nproc 3 --backend gpu --fsdp-devices 3 --batch-size 6 \
     --steps 200 --save-interval 25 --script kill@step=110 --serve 7777
 
-# REPLAY the committed master take:
+# REPLAY the committed master take — a 20s beat-budgeted cut BY DEFAULT:
 python scripts/demo_sharder.py --replay demo/runs/master_3xh100.jsonl --serve 7777
-# then open  http://localhost:7777/?mode=replay
-#   &capture=1   -> the 20s recording cut: chrome hidden, beat-budgeted timeline
-#                   (title/handshake 2.5s · steady 4s · kill 2s · supervisor 2s · resume 2s · proof ~4.5s · end card ~2s)
+# then open  http://localhost:7777/?mode=replay      (this is already the 20s cut)
+#   &capture=1   -> also hide the chrome + fix the camera (clean screen-record)
+#   &realtime=1  -> the full real-pace playback (~1.5 min) with the naive-striping coda
 #   &speed=2     -> playback rate ([ and ] adjust live; space pauses)
 #   &skipto=86   -> jump near a beat (86≈kill, 114≈proof) when reviewing
 ```
 
-To record the video: open the replay with `&capture=1` at 1080p+ fullscreen and screen-capture the browser —
-the cut runs 20 seconds, ending on the proof verdict and the end card (which holds from ~18.5s, so stop the
-recording at 20s). Time is remapped onto the beat budget (values verbatim, and the wall clock always shows the
-real run time); the naive-striping coda plays only in interactive replay, not in the capture cut.
+The 20s cut is the default, so whatever replay URL you record is 20 seconds. Beat budget:
+title/handshake 2.5s · steady 4s · kill (red) 2s · supervisor (amber) 2s · resume (green) 2s · proof ~4.5s ·
+end card ~2s — the end card is up by ~18.3s and holds, so stop the recording at 20s. Time is remapped onto that
+budget (values verbatim, and the wall clock always shows the real run time). To record cleanly, add `&capture=1`
+to hide the chrome. The naive-striping coda plays only in `&realtime=1`.
 
 ## What each rendered element is fed by
 
