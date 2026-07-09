@@ -39,15 +39,15 @@ python scripts/demo_sharder.py --live --nproc 3 --backend gpu --fsdp-devices 3 -
 # REPLAY the committed master take:
 python scripts/demo_sharder.py --replay demo/runs/master_3xh100.jsonl --serve 7777
 # then open  http://localhost:7777/?mode=replay
-#   &capture=1   -> the 30s recording cut: chrome hidden, beat-budgeted timeline
-#                   (title/handshake 3.5s · steady 8s · kill 3s · supervisor 3s · resume 3s · proof ~6s · end card ~3s)
+#   &capture=1   -> the 20s recording cut: chrome hidden, beat-budgeted timeline
+#                   (title/handshake 2.5s · steady 4s · kill 2s · supervisor 2s · resume 2s · proof ~4.5s · end card ~2s)
 #   &speed=2     -> playback rate ([ and ] adjust live; space pauses)
 #   &skipto=86   -> jump near a beat (86≈kill, 114≈proof) when reviewing
 ```
 
 To record the video: open the replay with `&capture=1` at 1080p+ fullscreen and screen-capture the browser —
-the cut runs 30 seconds, ending on the proof verdict and the end card (which holds from ~27.5s, so stop the
-recording at 30s). Time is remapped onto the beat budget (values verbatim, and the wall clock always shows the
+the cut runs 20 seconds, ending on the proof verdict and the end card (which holds from ~18.5s, so stop the
+recording at 20s). Time is remapped onto the beat budget (values verbatim, and the wall clock always shows the
 real run time); the naive-striping coda plays only in interactive replay, not in the capture cut.
 
 ## What each rendered element is fed by

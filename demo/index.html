@@ -548,9 +548,10 @@ function supLine(text, cls) {
 /* ---------- narrative caption ---------- */
 let captionTimer = null, captionShownAt = 0, captionQueued = null;
 function caption(html, tone, holdMs) {   // holdMs omitted -> sticky until the next caption
-  // a caption owns the screen for >=2.6s before the next one may replace it (no flash-throughs)
+  // a caption owns the screen for a minimum before the next may replace it (no flash-throughs)
+  const minHold = CAPTURE ? 1800 : 2600;
   const now = performance.now();
-  const wait = Math.max(0, 2600 - (now - captionShownAt));
+  const wait = Math.max(0, minHold - (now - captionShownAt));
   if (captionQueued) clearTimeout(captionQueued);
   if (wait > 0) { captionQueued = setTimeout(() => caption(html, tone, holdMs), wait); return; }
   captionShownAt = now;
@@ -735,7 +736,7 @@ function titleCard() {
   if (Number(qs.get("skipto") || "0") > 5) return;   // dev skipto: don't cover the beat being inspected
   const el = $("title-card");
   el.classList.add("show");
-  setTimeout(() => el.classList.remove("show"), CAPTURE ? 2700 : 3200);
+  setTimeout(() => el.classList.remove("show"), CAPTURE ? 2000 : 3200);
 }
 
 /* ---------- scene hooks (traces/camera/overlays attach here; no-op until that layer loads) ---------- */
@@ -786,9 +787,9 @@ function startReplay(events) {
   // (Chaining setTimeout per event drifts by its per-timer overhead — with thousands of events that
   // stretched the cut far past its budget.)
   //
-  // Capture cut (30s total): the run is remapped onto a fixed budget per beat —
-  //   title/handshake 3.5s · steady state 8s · kill (red) 3s · supervisor (amber) 3s · resume (green) 3s ·
-  //   proof overlay ~6s · end card ~3.5s. Values untouched; only time is remapped.
+  // Capture cut (20s total): the run is remapped onto a fixed budget per beat —
+  //   title/handshake 2.5s · steady state 4s · kill (red) 2s · supervisor (amber) 2s · resume (green) 2s ·
+  //   proof overlay ~4.5s · end card ~2s. Values untouched; only time is remapped.
   // The proof overlay and end card ride the tail after `en` on their own timers (see the scene layer).
   // Interactive replay: real pacing with long gaps (compiles, backoff) idle-compressed to <=1.6s.
   const pt = new Array(events.length);
@@ -797,7 +798,7 @@ function startReplay(events) {
     const tOf = (type) => { const e = events.find(x => x.type === type); return e ? e.t : null; };
     const hs = tOf("handshake"), kl = tOf("kill"), rs = tOf("resume"), en = events[events.length - 1].t;
     if (hs != null && kl != null && rs != null && hs < kl && kl < rs && rs < en) {
-      knots = [[0, 0], [hs, 3.5], [kl, 11.5], [rs, 17.5], [en, 20.5]];
+      knots = [[0, 0], [hs, 2.5], [kl, 6.5], [rs, 11], [en, 13]];
     }
   }
   if (knots) {
@@ -1021,7 +1022,7 @@ boot();
   addEventListener("resize", () => { if (T.built) buildTraces(); });
 
   /* ---------------- proof overlay (typed, sequenced) ---------------- */
-  const HOLD = CAPTURE ? 0.75 : 1;   // overlay sequence pacing; the 30s cut gives the proof room to read
+  const HOLD = CAPTURE ? 0.55 : 1;   // overlay sequence pacing; tight for the 20s cut but still readable
   function seq(steps) {  // [[delayMs, fn], ...] cumulative
     let t = 0;
     for (const [dt, fn] of steps) { t += dt * HOLD; setTimeout(fn, t); }
@@ -1066,7 +1067,7 @@ boot();
       [B * 140 + 600, () => $("pf-sha").classList.add("show")],
       [1100, () => $("pf-verdict").classList.add("show")],
     ]);
-    const dismissAt = total + (CAPTURE ? 2400 : 4500);
+    const dismissAt = total + (CAPTURE ? 1800 : 4500);
     setTimeout(() => { $("proof-card").classList.remove("show"); proofDone(); }, dismissAt);
     $("proof-card").onclick = () => { $("proof-card").classList.remove("show"); proofDone(); };
   }
@@ -1170,8 +1171,8 @@ boot();
       }
       case "proof":
         if (skippedPast(ev)) { proofDone(); break; }   // dev skipto jumped well beyond this beat
-        // capture: hold on the green "back alive" caption ~3s before the proof takes the screen
-        setTimeout(() => showProof(ev), CAPTURE ? 3000 : 1200 * HOLD);
+        // capture: hold on the green "back alive" caption ~2s before the proof takes the screen
+        setTimeout(() => showProof(ev), CAPTURE ? 2000 : 1200 * HOLD);
         break;
       case "coda":
         if (skippedPast(ev) || CAPTURE) break;   // the <30s capture cut ends on the proof; coda plays in interactive replay
