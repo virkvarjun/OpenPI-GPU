@@ -211,9 +211,12 @@ class Orchestrator:
             env["SHARDER_PROFILE"] = "1"
         if self.args.backend == "cpu":
             env["JAX_PLATFORMS"] = "cpu"
-            # Multi-process on CPU: stop each process from grabbing every core (thrashes the collectives).
-            for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-                env[k] = "1"
+            # Multi-process on CPU: split the cores so processes don't thrash each other's collectives.
+            # Single-process keeps every core (capping to 1 thread made steps ~10x slower).
+            if self.args.nproc > 1:
+                threads = max(1, (os.cpu_count() or 2) // self.args.nproc)
+                for k in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+                    env[k] = str(threads)
         return env
 
     # ---- lifecycle ----
