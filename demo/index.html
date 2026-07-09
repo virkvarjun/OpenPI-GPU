@@ -1,0 +1,675 @@
+<!doctype html>
+<!--
+  SHARDER cinematic demo renderer — single file, no build step.
+
+  Consumes ONLY the JSONL event stream produced by scripts/demo_sharder.py, which records a REAL run of the
+  unmodified training chain (elastic_launch -> launch_local -> N x train.py). Every number shown here — steps,
+  losses, ms, checkpoint steps, batch indices, hashes, exit codes — was parsed from that run's real output or
+  computed by openpi.training.data_sharding. This file adds presentation only.
+
+  HONESTY: the run is multi-process on ONE machine. It exercises the identical G1/G3/G4/G5 code path a
+  multi-node run would use. It is NOT a validated multi-node / NCCL-fabric run.
+
+  Modes:
+    live    — served by demo_sharder.py --live (SSE /events). Click a pane (or press 0-9 then k) to kill it.
+    replay  — ?mode=replay against demo_sharder.py --replay, or drag-drop a .jsonl onto the page.
+    capture — &capture=1: chrome hidden, no idle drift, for screen recording.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHARDER — fault-tolerant multi-host JAX training</title>
+<style>
+  /* ---------- tokens (categorical trio validated: dark band, CVD >= 11 with direction+label encoding) ---- */
+  :root {
+    --bg: #0a0e14;
+    --surface: #0e141d;
+    --surface-2: #111927;
+    --edge: #1d2735;
+    --ink: #dbe4ee;
+    --ink-2: #8b98a9;
+    --ink-3: #55606e;
+    --ag: #0d9bbd;         /* all-gather (cyan)      */
+    --rs: #c2299f;         /* reduce-scatter (magenta) */
+    --ar: #a97b1e;         /* all-reduce (amber)     */
+    --ag-glow: #35e0ff;
+    --rs-glow: #ff4fd8;
+    --ar-glow: #ffb454;
+    --ok: #2bb673;         /* status: alive (always with ● + label) */
+    --bad: #e04b55;        /* status: dead  (always with ✗ + label) */
+    --warn: #d9a03c;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: var(--bg); color: var(--ink); font-family: var(--mono); overflow: hidden; }
+
+  /* ---------- stage & camera ---------- */
+  #stage { position: fixed; inset: 0; overflow: hidden; }
+  #world {
+    position: absolute; inset: 0;
+    transform-origin: 50% 50%;
+    transition: transform 1.4s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #world { transition: none; }
+  }
+
+  /* ---------- HUD ---------- */
+  #hud {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 30;
+    display: flex; gap: 2.2vw; align-items: baseline;
+    padding: 1.1vh 1.6vw;
+    background: linear-gradient(to bottom, rgba(10,14,20,.92), rgba(10,14,20,0));
+    font-size: clamp(12px, 1.05vw, 18px);
+    letter-spacing: .06em;
+  }
+  .hud-item .k { color: var(--ink-3); font-size: .72em; letter-spacing: .18em; }
+  .hud-item .v { color: var(--ink); font-size: 1.25em; font-variant-numeric: tabular-nums; }
+  .hud-item .v.dim { color: var(--ink-3); }
+  #hud-alive .v.ok { color: var(--ok); }
+  #hud-alive .v.bad { color: var(--bad); }
+  #hud-ckpt .v.flash { animation: ckflash 1.2s ease-out; }
+  @keyframes ckflash { 0% { color: var(--ag-glow); text-shadow: 0 0 14px var(--ag-glow); } 100% { color: var(--ink); } }
+  #hud-spacer { flex: 1; }
+  #wordmark { color: var(--ink-2); font-size: 1.05em; letter-spacing: .34em; font-weight: 600; }
+  #wordmark b { color: var(--ink); }
+
+  /* ---------- pane grid ---------- */
+  #grid {
+    position: absolute; left: 4vw; right: 4vw; top: 9vh; bottom: 30vh;
+    display: grid; gap: 2.2vw;
+  }
+  .pane {
+    background: var(--surface);
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    display: flex; flex-direction: column;
+    min-height: 0; overflow: hidden;
+    position: relative;
+    transition: opacity .5s ease, filter .5s ease, border-color .5s ease;
+    cursor: pointer;
+  }
+  .pane.pending { opacity: .22; }
+  .pane.igniting { animation: ignite .9s ease-out; }
+  @keyframes ignite {
+    0% { opacity: .22; filter: brightness(2.2); box-shadow: 0 0 34px rgba(53,224,255,.25); }
+    100% { opacity: 1; filter: brightness(1); box-shadow: none; }
+  }
+  .pane.dead {
+    opacity: .34; filter: saturate(.15) brightness(.55);
+    border-color: rgba(224,75,85,.5);
+  }
+  .pane.stalled .pane-body { opacity: .45; }
+  .pane.stalled .pane-status { color: var(--warn); }
+  .pane-head {
+    display: flex; align-items: center; gap: 1em;
+    padding: .55em .9em;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--edge);
+    font-size: clamp(11px, .85vw, 15px);
+    letter-spacing: .1em;
+    flex: none;
+  }
+  .pane-title { color: var(--ink); font-weight: 600; }
+  .pane-pid { color: var(--ink-3); }
+  .pane-status { margin-left: auto; font-size: .92em; }
+  .pane-status.ok { color: var(--ok); }
+  .pane-status.bad { color: var(--bad); }
+  .pane-body {
+    flex: 1; min-height: 0; overflow: hidden;
+    padding: .6em .9em;
+    font-size: clamp(11px, .82vw, 15px);
+    line-height: 1.52;
+    color: var(--ink-2);
+    display: flex; flex-direction: column; justify-content: flex-end;
+  }
+  .pane-body .ln { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pane-body .ln.step { color: var(--ink); }
+  .pane-body .ln.step .loss { color: var(--ag-glow); }
+  .pane-body .ln.sys { color: var(--ink-3); }
+
+  /* ---------- traces (SVG overlay, populated in the trace layer section) ---------- */
+  #traces { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: visible; }
+
+  /* ---------- supervisor + loss curve row ---------- */
+  #bottom {
+    position: absolute; left: 4vw; right: 4vw; bottom: 3.4vh; height: 24vh;
+    display: grid; grid-template-columns: 7fr 5fr; gap: 2.2vw;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  }
+  .panel-head {
+    padding: .45em .9em; background: var(--surface-2); border-bottom: 1px solid var(--edge);
+    font-size: clamp(10px, .74vw, 14px); letter-spacing: .18em; color: var(--ink-3);
+    display: flex; gap: 1.2em; align-items: center;
+  }
+  #curve-wrap canvas { width: 100%; height: 100%; display: block; }
+  #curve-body { flex: 1; min-height: 0; position: relative; }
+  #curve-label {
+    position: absolute; right: .9em; top: .5em;
+    color: var(--ink); font-size: clamp(11px, .9vw, 16px); font-variant-numeric: tabular-nums;
+  }
+  #curve-label b { color: var(--ag-glow); font-weight: 600; }
+  #sup-body {
+    flex: 1; min-height: 0; overflow: hidden;
+    padding: .6em .9em; font-size: clamp(11px, .8vw, 15px); line-height: 1.55;
+    display: flex; flex-direction: column; justify-content: flex-end;
+  }
+  #sup-body .ln { color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #sup-body .ln.elastic { color: var(--warn); }
+  #sup-body .ln.kill { color: var(--bad); }
+  #sup-body .ln.good { color: var(--ok); }
+  #sup-idle { color: var(--ink-3); font-style: italic; }
+  #sup-panel.hot { border-color: rgba(217,160,60,.55); box-shadow: 0 0 26px rgba(217,160,60,.08); }
+
+  /* legend chips: collective identity is never color-alone (label + direction) */
+  .chip { display: inline-flex; align-items: center; gap: .45em; color: var(--ink-2); letter-spacing: .06em; }
+  .chip .sw { width: 1.5em; height: 3px; border-radius: 2px; display: inline-block; }
+
+  /* ---------- honesty footnote (always present) ---------- */
+  #honesty {
+    position: fixed; bottom: .55vh; left: 0; right: 0; z-index: 40;
+    text-align: center; font-size: clamp(9px, .68vw, 13px); letter-spacing: .05em; color: var(--ink-3);
+  }
+
+  /* ---------- chrome (hidden in capture mode) ---------- */
+  #chrome {
+    position: fixed; top: 1.1vh; right: 1.6vw; z-index: 50;
+    display: flex; gap: .8em; align-items: center;
+    font-size: clamp(10px, .78vw, 14px); color: var(--ink-3);
+  }
+  #chrome .mode { border: 1px solid var(--edge); border-radius: 6px; padding: .25em .7em; }
+  body.capture #chrome { display: none; }
+  body.capture { cursor: none; }
+
+  /* ---------- overlays (title / proof / coda / end) ---------- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 60;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(7, 10, 15, .88);
+    opacity: 0; pointer-events: none;
+    transition: opacity .8s ease;
+  }
+  .overlay.show { opacity: 1; pointer-events: auto; }
+  .overlay-inner { max-width: 72vw; }
+  #title-card { text-align: center; }
+  #title-card h1 { font-size: clamp(34px, 5vw, 92px); letter-spacing: .42em; font-weight: 700; text-indent: .42em; }
+  #title-card p { margin-top: 1.6em; color: var(--ink-2); font-size: clamp(13px, 1.15vw, 22px); letter-spacing: .12em; }
+  #title-card .sub { margin-top: .8em; color: var(--ink-3); font-size: clamp(11px, .85vw, 16px); }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="world">
+    <div id="grid"></div>
+    <svg id="traces"></svg>
+    <div id="bottom">
+      <div class="panel" id="curve-panel">
+        <div class="panel-head">
+          <span>TRAINING LOSS — real values from the run</span>
+          <span style="margin-left:auto" class="chip"><span class="sw" style="background:var(--ag)"></span></span>
+        </div>
+        <div id="curve-body">
+          <canvas id="curve"></canvas>
+          <div id="curve-label"></div>
+        </div>
+      </div>
+      <div class="panel" id="sup-panel">
+        <div class="panel-head"><span>SUPERVISOR — scripts/elastic_launch.py</span></div>
+        <div id="sup-body"><div class="ln" id="sup-idle">quiet. nothing to do.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="hud">
+    <span id="wordmark"><b>SHARDER</b></span>
+    <span class="hud-item" id="hud-step"><span class="k">STEP </span><span class="v dim">—</span></span>
+    <span class="hud-item" id="hud-ms"><span class="k">MS/STEP </span><span class="v dim">—</span></span>
+    <span class="hud-item" id="hud-mfu"><span class="k">MFU </span><span class="v dim">—</span></span>
+    <span class="hud-item" id="hud-alive"><span class="k">ALIVE </span><span class="v dim">—</span></span>
+    <span class="hud-item" id="hud-ckpt"><span class="k">CKPT </span><span class="v dim">—</span></span>
+    <span class="hud-item" id="hud-wall"><span class="k">WALL </span><span class="v dim">0:00</span></span>
+    <span id="hud-spacer"></span>
+    <span class="hud-item" id="hud-legend"></span>
+  </div>
+
+  <div id="chrome"></div>
+  <div id="honesty"></div>
+
+  <div class="overlay" id="title-card">
+    <div class="overlay-inner">
+      <h1>SHARDER</h1>
+      <p>fault-tolerant multi-host JAX training for openpi</p>
+      <p class="sub" id="title-sub"></p>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+/* =========================================================================================
+   event ingestion — the JSONL stream is the single source of truth
+   ========================================================================================= */
+const qs = new URLSearchParams(location.search);
+const CAPTURE = qs.get("capture") === "1";
+const REDUCED = matchMedia("(prefers-reduced-motion: reduce)").matches;
+if (CAPTURE) document.body.classList.add("capture");
+
+const S = {
+  meta: null,
+  nproc: 0,
+  procs: new Map(),        // k -> {el, body, status, pid, step, alive, lines}
+  curve: [],               // [{step, loss}] from the lowest-index reporting proc
+  curveProc: null,
+  maxStep: -1,
+  ckpt: null,
+  wall: 0,
+  wallMs: [],              // recent per-step wall ms (rolling)
+  profile: null,           // {median_ms?, mfu?} from a [profile] event
+  collectives: null,       // {ops: {...}} from the compiled HLO
+  killedProc: null,
+  resumes: 0,
+  ended: false,
+};
+
+const $ = (id) => document.getElementById(id);
+const grid = $("grid"), supBody = $("sup-body");
+
+function fmtWall(t) {
+  const m = Math.floor(t / 60), s = Math.floor(t % 60);
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+function median(a) {
+  if (!a.length) return null;
+  const s = [...a].sort((x, y) => x - y);
+  return s[Math.floor(s.length / 2)];
+}
+
+/* ---------- panes ---------- */
+function makePane(k) {
+  const el = document.createElement("div");
+  el.className = "pane pending";
+  el.dataset.proc = k;
+  el.innerHTML = `
+    <div class="pane-head">
+      <span class="pane-title">PROC ${k}</span>
+      <span class="pane-pid"></span>
+      <span class="pane-status">○ waiting</span>
+    </div>
+    <div class="pane-body"></div>`;
+  el.addEventListener("click", () => liveKill(k));
+  grid.appendChild(el);
+  const p = {
+    el, k,
+    body: el.querySelector(".pane-body"),
+    pidEl: el.querySelector(".pane-pid"),
+    statusEl: el.querySelector(".pane-status"),
+    pid: null, step: -1, alive: false,
+  };
+  S.procs.set(k, p);
+  return p;
+}
+function pane(k) { return S.procs.get(k) || makePane(k); }
+
+function setGrid(n) {
+  S.nproc = n;
+  grid.style.gridTemplateColumns = `repeat(${Math.min(n, 4)}, 1fr)`;
+  for (let k = 0; k < n; k++) pane(k);
+}
+
+function paneLine(k, html, cls) {
+  const p = pane(k);
+  const div = document.createElement("div");
+  div.className = "ln " + (cls || "");
+  div.innerHTML = html;
+  p.body.appendChild(div);
+  while (p.body.children.length > 14) p.body.removeChild(p.body.firstChild);
+}
+
+function paneStatus(k, state) { // 'up' | 'dead' | 'stalled' | 'pending'
+  const p = pane(k);
+  p.el.classList.remove("pending", "dead", "stalled");
+  if (state === "up") {
+    p.alive = true;
+    p.el.classList.add("igniting");
+    setTimeout(() => p.el.classList.remove("igniting"), 950);
+    p.statusEl.textContent = "● ALIVE";
+    p.statusEl.className = "pane-status ok";
+  } else if (state === "dead") {
+    p.alive = false;
+    p.el.classList.add("dead");
+    p.statusEl.textContent = "✗ KILLED";
+    p.statusEl.className = "pane-status bad";
+  } else if (state === "stalled") {
+    p.el.classList.add("stalled");
+    p.statusEl.textContent = "◌ stalled — waiting on dead peer";
+    p.statusEl.className = "pane-status";
+  } else {
+    p.el.classList.add("pending");
+    p.statusEl.textContent = "○ waiting";
+    p.statusEl.className = "pane-status";
+  }
+  hudAlive();
+}
+
+/* ---------- HUD ---------- */
+function hudSet(id, v, dim) {
+  const el = $(id).querySelector(".v");
+  el.textContent = v;
+  el.classList.toggle("dim", !!dim);
+}
+function hudAlive() {
+  const up = [...S.procs.values()].filter(p => p.alive).length;
+  const el = $("hud-alive").querySelector(".v");
+  el.textContent = `${up}/${S.nproc || "—"}`;
+  el.className = "v " + (S.nproc && up === S.nproc ? "ok" : up < S.nproc ? "bad" : "");
+}
+function hudMs() {
+  if (S.profile && S.profile.median_ms) {
+    hudSet("hud-ms", `${S.profile.median_ms.toFixed(0)} (device)`, false);
+  } else {
+    const m = median(S.wallMs);
+    if (m != null) hudSet("hud-ms", `${m.toFixed(0)} (wall)`, false);
+  }
+  // MFU is shown ONLY if the real profiler reported one (needs a real peak-FLOPs for the device).
+  if (S.profile && S.profile.mfu != null) hudSet("hud-mfu", `${(S.profile.mfu * 100).toFixed(1)}%`, false);
+}
+
+/* ---------- loss curve (single series; recessive grid; direct label, no legend box) ---------- */
+const curveCv = $("curve");
+let curveDirty = false;
+function drawCurve() {
+  curveDirty = false;
+  const body = $("curve-body");
+  const w = body.clientWidth, h = body.clientHeight;
+  if (!w || !h) return;
+  const dpr = devicePixelRatio || 1;
+  if (curveCv.width !== w * dpr) { curveCv.width = w * dpr; curveCv.height = h * dpr; }
+  const ctx = curveCv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const pts = S.curve;
+  if (pts.length < 2) return;
+  const x0 = 10, x1 = w - 10, y0 = h - 12, y1 = 10;
+  const sMin = pts[0].step, sMax = Math.max(pts[pts.length - 1].step, sMin + 1);
+  let lMin = Infinity, lMax = -Infinity;
+  for (const p of pts) { if (p.loss < lMin) lMin = p.loss; if (p.loss > lMax) lMax = p.loss; }
+  const pad = (lMax - lMin || 1) * 0.12;
+  lMin -= pad; lMax += pad;
+  const X = s => x0 + (s - sMin) / (sMax - sMin) * (x1 - x0);
+  const Y = l => y0 + (l - lMin) / (lMax - lMin) * (y1 - y0);
+  // recessive grid: 3 horizontal lines
+  ctx.strokeStyle = "rgba(139,152,169,.10)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i <= 3; i++) {
+    const y = y1 + (y0 - y1) * i / 4;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+  }
+  // the series: 2px, validated cyan, soft glow
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--ag").trim();
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "rgba(53,224,255,.35)";
+  ctx.shadowBlur = 6;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const x = X(p.step), y = Y(p.loss); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+  const last = pts[pts.length - 1];
+  $("curve-label").innerHTML = `loss <b>${last.loss.toFixed(4)}</b> <span style="color:var(--ink-3)">@ step ${last.step}</span>`;
+}
+function curveMark() {
+  if (!curveDirty) { curveDirty = true; requestAnimationFrame(drawCurve); }
+}
+addEventListener("resize", curveMark);
+
+/* ---------- supervisor panel ---------- */
+function supLine(text, cls) {
+  const idle = $("sup-idle");
+  if (idle) idle.remove();
+  const div = document.createElement("div");
+  div.className = "ln " + (cls || "");
+  div.textContent = text;
+  supBody.appendChild(div);
+  while (supBody.children.length > 8) supBody.removeChild(supBody.firstChild);
+}
+
+/* =========================================================================================
+   event application — one function, both modes
+   ========================================================================================= */
+function apply(ev) {
+  S.wall = ev.t;
+  hudSet("hud-wall", fmtWall(ev.t), false);
+  switch (ev.type) {
+
+    case "meta": {
+      S.meta = ev;
+      setGrid(ev.nproc);
+      $("title-sub").textContent =
+        `${ev.nproc} processes · batch ${ev.batch_size} · config "${ev.config}" · ${ev.backend} · run ${ev.run_id} @ ${ev.git_sha}`;
+      $("honesty").textContent =
+        `${ev.nproc} processes on one machine — the identical G1/G3/G4/G5 code path a multi-node run uses. ` +
+        `Not a validated multi-node/NCCL run. Every number is from the real run (${ev.run_id}).`;
+      titleCard();
+      break;
+    }
+
+    case "proc_up": {
+      const p = pane(ev.proc);
+      p.pid = ev.pid;
+      p.pidEl.textContent = ev.pid ? `pid ${ev.pid}` : "";
+      paneStatus(ev.proc, "up");
+      paneLine(ev.proc, `distributed init — process ${ev.process_index}/${ev.process_count} on ${esc(ev.host)}`, "sys");
+      break;
+    }
+
+    case "handshake": {
+      for (const [k] of S.procs) { const p = S.procs.get(k); if (p.alive) p.el.classList.remove("stalled"); }
+      if (ev.attempt > 0) supLine("workers re-rendezvoused — cluster is back", "good");
+      sceneEvent("handshake", ev);
+      break;
+    }
+
+    case "collective_profile": {
+      S.collectives = ev;
+      const names = { "all-gather": "var(--ag)", "reduce-scatter": "var(--rs)", "all-reduce": "var(--ar)" };
+      $("hud-legend").innerHTML = Object.entries(ev.ops || {})
+        .filter(([op]) => names[op])
+        .map(([op, n]) => `<span class="chip"><span class="sw" style="background:${names[op]}"></span>${op}×${n}</span>`)
+        .join("&nbsp;&nbsp;");
+      sceneEvent("collectives", ev);
+      break;
+    }
+
+    case "step": {
+      const p = pane(ev.proc);
+      p.step = ev.step;
+      if (!p.alive) paneStatus(ev.proc, "up");   // resumed worker is stepping again
+      p.el.classList.remove("stalled");
+      const ck = S.ckpt != null ? ` <span style="color:var(--ink-3)">ckpt@${S.ckpt}</span>` : "";
+      const ms = ev.wall_ms != null && ev.wall_ms < 60000 ? ` ${Math.round(ev.wall_ms)} ms ` : " ";
+      paneLine(ev.proc,
+        `step ${String(ev.step).padStart(5, "0")} │ <span class="loss">loss ${ev.loss?.toFixed(4)}</span> │${ms}│${ck}`,
+        "step");
+      if (ev.step > S.maxStep) { S.maxStep = ev.step; hudSet("hud-step", String(ev.step), false); }
+      if (ev.wall_ms != null && ev.wall_ms < 60000) {
+        S.wallMs.push(ev.wall_ms);
+        if (S.wallMs.length > 40) S.wallMs.shift();
+        hudMs();
+      }
+      if (S.curveProc == null) S.curveProc = ev.proc;
+      if (ev.proc === S.curveProc && ev.loss != null) {
+        // keyed by STEP: a resume overlays the same x — the curve continues, provably unbroken
+        while (S.curve.length && S.curve[S.curve.length - 1].step >= ev.step) S.curve.pop();
+        S.curve.push({ step: ev.step, loss: ev.loss });
+        curveMark();
+      }
+      sceneEvent("step", ev);
+      break;
+    }
+
+    case "ckpt": {
+      S.ckpt = ev.step;
+      hudSet("hud-ckpt", `step ${ev.step}`, false);
+      $("hud-ckpt").querySelector(".v").classList.remove("flash");
+      void $("hud-ckpt").querySelector(".v").offsetWidth;
+      $("hud-ckpt").querySelector(".v").classList.add("flash");
+      sceneEvent("ckpt", ev);
+      break;
+    }
+
+    case "kill": {
+      S.killedProc = ev.proc;
+      paneStatus(ev.proc, "dead");
+      paneLine(ev.proc, `SIGKILL → pid ${ev.pid} at step ${ev.step_at_kill}`, "sys");
+      supLine(`✗ process ${ev.proc} (pid ${ev.pid}) killed at step ${ev.step_at_kill} — last checkpoint @ ${ev.ckpt_step}`, "kill");
+      $("sup-panel").classList.add("hot");
+      for (const [k, p] of S.procs) if (k !== ev.proc && p.alive) paneStatus(k, "stalled");
+      sceneEvent("kill", ev);
+      break;
+    }
+
+    case "proc_exit": {
+      const p = pane(ev.proc);
+      if (ev.proc === S.killedProc || ev.exit_code !== 0) {
+        if (!p.el.classList.contains("dead")) paneStatus(ev.proc, "dead");
+        paneLine(ev.proc, `exited rc=${ev.exit_code}`, "sys");
+      }
+      break;
+    }
+
+    case "supervisor": {
+      supLine(ev.text, "elastic");
+      sceneEvent("supervisor", ev);
+      break;
+    }
+
+    case "resume": {
+      S.resumes = ev.resumes;
+      supLine(`▸ resumed — training continues from checkpoint @ step ${ev.ckpt_step}`, "good");
+      $("sup-panel").classList.remove("hot");
+      sceneEvent("resume", ev);
+      break;
+    }
+
+    case "proof":  sceneEvent("proof", ev); break;
+    case "coda":   sceneEvent("coda", ev); break;
+
+    case "profile": {
+      S.profile = Object.assign({}, S.profile, ev);
+      hudMs();
+      break;
+    }
+
+    case "line": {
+      if (ev.proc != null) {
+        const t = ev.text;
+        // keep panes readable: surface only load-bearing non-step lines
+        if (/local_batch_size|Initialized|restor|checkpoint|Loaded|hlo-collectives|\[profile\]/i.test(t)) {
+          paneLine(ev.proc, esc(shorten(t)), "sys");
+        }
+      } else if (ev.text && /demo|PROOF/i.test(ev.text)) {
+        supLine(ev.text, "elastic");
+      }
+      break;
+    }
+
+    case "end": {
+      S.ended = true;
+      sceneEvent("end", ev);
+      break;
+    }
+  }
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function shorten(t) { return t.replace(/^\d\d:\d\d:\d\d\.\d+\s+\[\w\]\s+/, "").replace(/\s+\(\d+:[\w./]+:\d+\)\s*$/, ""); }
+
+/* ---------- title card ---------- */
+function titleCard() {
+  const el = $("title-card");
+  el.classList.add("show");
+  setTimeout(() => el.classList.remove("show"), CAPTURE ? 5200 : 3200);
+}
+
+/* ---------- scene hooks (traces/camera/overlays attach here; no-op until that layer loads) ---------- */
+function sceneEvent(kind, ev) { if (window.__scene) window.__scene(kind, ev); }
+
+/* ---------- live kill (chrome + pane click) ---------- */
+let MODE = "live";
+let pendingDigit = "";
+function liveKill(k) {
+  if (MODE !== "live" || S.ended) return;
+  fetch(`/kill?proc=${k}`, { method: "POST" }).catch(() => {});
+}
+addEventListener("keydown", (e) => {
+  if (MODE !== "live") return;
+  if (/^[0-9]$/.test(e.key)) { pendingDigit = e.key; return; }
+  if (e.key === "k") {
+    const k = pendingDigit !== "" ? Number(pendingDigit) : null;
+    pendingDigit = "";
+    fetch(`/kill${k != null ? `?proc=${k}` : ""}`, { method: "POST" }).catch(() => {});
+  }
+});
+
+/* =========================================================================================
+   ingestion: SSE (live) or fetched log (replay, paced) or drag-drop
+   ========================================================================================= */
+function startLive() {
+  MODE = "live";
+  $("chrome").innerHTML = `<span class="mode">LIVE — real run</span><span>click a pane (or 0-9 then k) to kill that process</span>`;
+  const es = new EventSource("/events");
+  es.onmessage = (m) => { try { apply(JSON.parse(m.data)); } catch {} };
+  es.onerror = () => {};
+}
+
+function startReplay(events) {
+  MODE = "replay";
+  const speed = Number(qs.get("speed") || "1");
+  $("chrome").innerHTML = `<span class="mode">REPLAY — recorded real run · timing compressed</span>`;
+  $("honesty").textContent += "  ·  REPLAY: timing compressed, values verbatim";
+  let i = 0;
+  function next() {
+    if (i >= events.length) return;
+    const ev = events[i++];
+    apply(ev);
+    if (i < events.length) {
+      const dtReal = Math.max(0, events[i].t - ev.t);
+      const dt = Math.min(dtReal, 1.6) / speed;   // idle-compress long real gaps (compiles, backoff)
+      setTimeout(next, dt * 1000);
+    }
+  }
+  next();
+}
+
+async function boot() {
+  if (qs.get("mode") === "replay" || qs.get("replay")) {
+    const url = qs.get("replay") || "/log";
+    const txt = await (await fetch(url)).text();
+    startReplay(txt.trim().split("\n").filter(Boolean).map(l => JSON.parse(l)));
+  } else {
+    // probe: if /events exists we're being served by demo_sharder --live; else await drag-drop
+    try {
+      const r = await fetch("/log", { method: "GET" });
+      if (r.ok) { startLive(); return; }
+    } catch {}
+    $("chrome").innerHTML = `<span class="mode">drop a run .jsonl to replay</span>`;
+  }
+}
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("drop", async (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  const txt = await f.text();
+  startReplay(txt.trim().split("\n").filter(Boolean).map(l => JSON.parse(l)));
+});
+boot();
+</script>
+</body>
+</html>
