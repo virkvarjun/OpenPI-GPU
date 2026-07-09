@@ -11,8 +11,9 @@ real per-process log lines, real step/loss values, the collective ops present in
 (SHARDER_DEMO_HLO=1), real checkpoint directories on disk, the supervisor's own [elastic] lines, and the
 deterministic-resume proof computed by openpi.training.data_sharding.
 
-HONESTY: this is MULTI-PROCESS ON ONE MACHINE. It exercises the identical G1/G3/G4/G5 code path a multi-node
-run would use. It is NOT a validated multi-node / NCCL-fabric run and never claims to be.
+HONESTY: this is MULTI-PROCESS ON ONE MACHINE. It exercises the same distributed init, within-batch data
+sharding, exact deterministic resume, and restart supervision a multi-node run would use. It is NOT a
+validated multi-node / NCCL-fabric run and never claims to be.
 
 Usage:
   # live run, browser UI at http://localhost:7777 (kill a pane by clicking it, or press k / 0-9 then k):
@@ -252,8 +253,8 @@ class Orchestrator:
             kill_script=self.args.script,
             git_sha=_git_sha(),
             cmd=" ".join(cmd),
-            honesty="multi-process on one machine; identical G1/G3/G4/G5 code path a multi-node run uses; "
-                    "NOT a validated multi-node/NCCL run",
+            honesty="multi-process on one machine; the same distributed init, data sharding, exact resume, and "
+                    "restart supervision a multi-node run uses; NOT a validated multi-node/NCCL run",
         )
         self.proc = subprocess.Popen(
             cmd, cwd=str(REPO), env=self.child_env(),

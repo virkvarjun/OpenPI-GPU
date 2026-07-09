@@ -7,11 +7,10 @@ collectives between processes, and the supervisor's decision to restart.
 
 ## Honesty (read this first)
 
-- **These are PROCESSES, not nodes.** Every run is multi-process on one machine. It exercises the identical
-  bring-up (G1), within-batch data sharding (G3), deterministic resume (G4), and elastic supervisor (G5) code
-  path a multi-node run would use. It is **not** a validated multi-node / NCCL-fabric run, and neither this
-  README, the renderer, nor the video ever claims it is. The footnote saying so stays on screen for the whole
-  video.
+- **These are PROCESSES, not nodes.** Every run is multi-process on one machine. It exercises the same
+  distributed bring-up, within-batch data sharding, exact deterministic resume, and restart supervision a
+  multi-node run would use. It is **not** a validated multi-node / NCCL-fabric run, and neither this README,
+  the renderer, nor the video ever claims it is. The footnote saying so stays on screen for the whole video.
 - **Every rendered number is produced by the real code.** Steps, losses, ms, checkpoint steps, batch indices,
   hashes, pids, exit codes — all parsed from the run's own output or computed by `openpi.training.data_sharding`
   and recorded in a JSONL event log. Pause the video on any frame; the table below says where each number
@@ -40,14 +39,16 @@ python scripts/demo_sharder.py --live --nproc 3 --backend gpu --fsdp-devices 3 -
 # REPLAY the committed master take:
 python scripts/demo_sharder.py --replay demo/runs/master_3xh100.jsonl --serve 7777
 # then open  http://localhost:7777/?mode=replay
-#   &capture=1   -> chrome hidden, fixed camera, longer overlay holds (for screen recording)
+#   &capture=1   -> the <30s recording cut: chrome hidden, beat-budgeted timeline
+#                   (title 3s · steady state 7.5s · kill+supervisor 6.5s · resume 4s · proof · end card)
 #   &speed=2     -> playback rate ([ and ] adjust live; space pauses)
 #   &skipto=86   -> jump near a beat (86≈kill, 114≈proof) when reviewing
 ```
 
-To record the video: run the replay with `&capture=1` at 1080p+ fullscreen, screen-capture the browser, and cut
-to music. Long real gaps (compiles, supervisor backoff) are compressed to ≤1.6 s; the wall clock always shows
-the real run time.
+To record the video: open the replay with `&capture=1` at 1080p+ fullscreen and screen-capture the browser —
+the whole cut runs under 30 seconds, ending on the proof verdict and the end card. Time is remapped onto the
+beat budget (values verbatim, and the wall clock always shows the real run time); the naive-striping coda
+plays only in interactive replay, not in the capture cut.
 
 ## What each rendered element is fed by
 
