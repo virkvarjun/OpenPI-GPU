@@ -116,7 +116,10 @@ def test_coda_naive_striping_differs_within_batch_matches():
     c = demo.striping_coda(25, batch=6, nproc=3)
     assert c["within_batch_identical"] is True
     assert c["naive_identical"] is False  # the whole point of within-batch sharding
-    assert sorted(c["reference"]) != sorted(c["naive_stripe"]) or c["reference"] != c["naive_stripe"]
+    # the naive model (dataset k::N + per-process shuffle) must differ in MEMBERSHIP, not just order —
+    # order-only difference would be gradient-equivalent (batch mean is permutation-invariant)
+    assert c["naive_same_examples"] is False
+    assert sorted(c["reference"]) != sorted(c["naive_stripe"])
 
 
 def test_event_log_is_valid_jsonl(tmp_path):

@@ -120,17 +120,28 @@ def resume_proof(step: int, batch: int, nproc: int) -> dict:
 
 
 def striping_coda(step: int, batch: int, nproc: int) -> dict:
-    """Naive order[k::N] striping (how openpi-comet shards) vs our within-batch shard, both against the
-    single-process reference batch at `step`. Same real global_order for all three."""
+    """Naive DATASET striping vs our within-batch shard, both against the single-process reference batch.
+
+    "Naive" models what you get if you hand each process a ``k::N`` stripe of the dataset and a shuffling
+    DataLoader (the openpi-comet approach): each process permutes ITS OWN shard, so the per-step global batch
+    draws different examples than the single-process run — parity breaks in membership, not just order.
+    (A strawman that stripes the already-shared global order would coincide in membership mid-epoch, and a
+    batch-mean gradient is permutation-invariant — that would prove nothing. This is the real failure mode.)
+    """
     import numpy as np
 
     from openpi.training import data_sharding as ds
 
     epoch, offset = ds.resume_position(step, DATASET_LEN, batch)
-    order = ds.global_order(DATASET_LEN, shuffle=True, seed=SEED, epoch=epoch)
     reference = ds.global_batch_indices(DATASET_LEN, batch, offset, shuffle=True, seed=SEED, epoch=epoch)
     local = batch // nproc
-    naive = np.concatenate([order[k::nproc][offset * local : (offset + 1) * local] for k in range(nproc)])
+    rng_seed = ds.epoch_seed(SEED, epoch)
+    naive_parts = []
+    for k in range(nproc):
+        shard = np.arange(k, DATASET_LEN, nproc)  # dataset striped k::N
+        stripe = shard[np.random.default_rng(rng_seed).permutation(len(shard))]  # per-process shuffle
+        naive_parts.append(stripe[offset * local : (offset + 1) * local])
+    naive = np.concatenate(naive_parts)
     within = np.concatenate([
         ds.process_index_stream(DATASET_LEN, batch, k, nproc, shuffle=True, seed=SEED, epoch=epoch,
                                 start_batch=offset)[:local]
@@ -142,6 +153,7 @@ def striping_coda(step: int, batch: int, nproc: int) -> dict:
         "naive_stripe": naive.tolist(),
         "within_batch": within.tolist(),
         "naive_identical": bool(np.array_equal(reference, naive)),
+        "naive_same_examples": bool(np.array_equal(np.sort(reference), np.sort(naive))),
         "within_batch_identical": bool(np.array_equal(reference, within.astype(reference.dtype))),
     }
 
@@ -161,7 +173,8 @@ class RunState:
     kill_pending: str | None = None  # "step=N" trigger
     killed_at: dict | None = None  # {"step":, "ckpt_step":, "proc":}
     awaiting_resume: bool = False  # set on relaunch; the next step at/below the old counter proves the resume
-    resumes: int = 0
+    resumes: int = 0  # per-process resume detections (3 procs resuming once = 3)
+    kills: int = 0
     hlo_emitted: bool = False
     handshake_done: bool = False
     lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
@@ -261,7 +274,7 @@ class Orchestrator:
         ok = rc == 0
         with st.lock:
             final = max(st.last_step.values(), default=-1)
-        self.log.emit("end", ok=ok, rc=rc, final_step=final, resumes=st.resumes)
+        self.log.emit("end", ok=ok, rc=rc, final_step=final, kills=st.kills, resumes=st.resumes)
 
     def _parse(self, line: str):  # noqa: PLR0912
         st = self.st
@@ -418,6 +431,7 @@ class Orchestrator:
                 st.ckpt_step = max(max(on_disk), st.ckpt_step or 0)
             ck = st.ckpt_step
             st.kill_pending = None
+            st.kills += 1
             st.killed_at = {"proc": proc_idx, "step": step, "ckpt_step": ck}
         try:
             os.kill(pid, signal.SIGKILL)

@@ -936,11 +936,12 @@ boot();
   function showCoda(ev) {
     const box = $("coda-box");
     box.innerHTML = `
-      <h2>WHY WITHIN-BATCH SHARDING <span class="src">· same global order, two ways to split it</span></h2>
-      ${idxRow("single-process reference @ " + ev.step, ev.reference, "cd-ref")}
-      ${idxRow("naive order[k::N] striping", ev.naive_stripe, "cd-naive")}
-      ${idxRow("sharder within-batch", ev.within_batch, "cd-wb")}
-      <div class="proof-line" id="cd-note">naive striping trains on a <b style="color:var(--bad)">different global batch</b> —
+      <h2>WHY WITHIN-BATCH SHARDING <span class="src">· global batch @ step ${ev.step}, three ways</span></h2>
+      ${idxRow("single-process reference", ev.reference, "cd-ref")}
+      ${idxRow("naive: dataset k::N + per-proc shuffle", ev.naive_stripe, "cd-naive")}
+      ${idxRow("sharder: within-batch shard", ev.within_batch, "cd-wb")}
+      <div class="proof-line" id="cd-note">naive striping trains on <b style="color:var(--bad)">different examples</b>
+        ${ev.naive_same_examples === false ? "(not even the same members)" : ""} —
         within-batch reconstructs the reference <b style="color:var(--ok)">bit-identically</b>
         (${ev.within_batch_identical ? "verified" : "FAILED"} this run)</div>`;
     $("coda-card").classList.add("show");
@@ -968,7 +969,7 @@ boot();
     $("end-inner").innerHTML = `
       <h1>SHARDER</h1>
       <div class="runline">
-        this run: ${S.maxStep >= 0 ? `step ${S.maxStep}` : ""} · ${ev.resumes} kill${ev.resumes === 1 ? "" : "s"} survived ·
+        this run: ${S.maxStep >= 0 ? `step ${S.maxStep}` : ""} · ${ev.kills ?? 0} kill${(ev.kills ?? 0) === 1 ? "" : "s"} survived ·
         last checkpoint @ ${S.ckpt ?? "—"} · wall ${fmtWall(ev.t)} · run ${S.meta?.run_id} @ ${S.meta?.git_sha}
       </div>
       <div class="findings">
