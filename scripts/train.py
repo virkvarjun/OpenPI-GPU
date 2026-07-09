@@ -285,8 +285,11 @@ def main(config: _config.TrainConfig):
     prof_cost: profiling.StepCost | None = None
     if prof is not None:
         # Compile once to read the step's static FLOP/byte cost from XLA; shares the jit cache with the live
-        # calls below (same shapes/shardings), so no real double compilation.
-        prof_cost = profiling.step_cost(ptrain_step.lower(train_rng, train_state, batch).compile())
+        # calls below (same shapes/shardings), so no real double compilation. disable_typechecking for the same
+        # reason as the SHARDER_DEMO_HLO probe above: lower()'s donation bookkeeping unflattens ArgInfo leaves
+        # through TrainState, which the jaxtyping annotations reject (broke SHARDER_PROFILE=1 with fsdp>1).
+        with at.disable_typechecking():
+            prof_cost = profiling.step_cost(ptrain_step.lower(train_rng, train_state, batch).compile())
         logging.info(f"[profile] enabled: timing steps {prof.start}..{prof.start + prof.steps - 1}")
 
     start_step = int(train_state.step)
